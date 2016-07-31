@@ -1,0 +1,50 @@
+# Basic
+title: JimmyLTS的博客
+subtitle: 其路漫漫，吾将求索
+welcome_message: 
+description: 大家好，我是Jimmy，新晋iOS开发者，希望在开发的路上渐行渐远。
+creator: <a href="https://twitter.com/Jimmy_GQY">@Jimmy</a>
+
+url: "http://vno.onevcat.com"
+
+permalink: /:year/:month/:title/
+
+# Format
+highlighter: plain
+markdown: redcarpet
+redcarpet:
+  extensions: ["no_intra_emphasis", "fenced_code_blocks", "autolink", "strikethrough", "superscript", tables]
+
+# supported colors: blue, green, purple, red, orange or slate. If you need clear, leave it empty.
+cover_color: slate
+
+blog_button:
+    title: 博客
+    description: 访问博客
+
+nav:
+    #- {title: 项目, description: 我的项目, url: 'https://twitter.com/Jimmy_GQY'}
+    - {title: 关于, description: 了解更多关于我, url: '/#welcome'}
+    #- {title: 订阅, description: 邮件订阅本站, url: '//store.objccn.io/subscribe'}
+
+# Pagination
+gems: [jekyll-paginate]
+paginate: 10
+paginate_path: "page/:num/"
+
+# Comment
+comment:
+    disqus: JimmyLTS
+    # duoshuo:
+# Social
+social:
+    weibo: 2148794830
+    github: JimmyLTS
+    twitter: Jimmy_GQY
+    mail: lvtongsheng@126.com
+
+# Google Analytics
+ga:
+    id: UA-25719337-1
+    host: onevcat.com
+

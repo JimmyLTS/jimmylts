@@ -1,0 +1,2699 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>JimmyLTS的博客</title>
+    <description>大家好，我是Jimmy，新晋iOS开发者，希望在开发的路上渐行渐远。</description>
+    <link>http://vno.onevcat.com/</link>
+    <atom:link href="http://vno.onevcat.com/feed.xml" rel="self" type="application/rss+xml"/>
+    <pubDate>Fri, 29 Jul 2016 16:54:05 +0800</pubDate>
+    <lastBuildDate>Fri, 29 Jul 2016 16:54:05 +0800</lastBuildDate>
+    <generator>Jekyll v3.1.6</generator>
+    
+      <item>
+        <title>Swift 2 throws 全解析 - 从原理到实践</title>
+        <description>&lt;p&gt;本文最初于 2015 年 12 月发布在 IBM developerWorks 中国网站发表，其网址是 &lt;a href=&quot;http://www.ibm.com/developerworks/cn/mobile/mo-cn-swift/index.html&quot;&gt;http://www.ibm.com/developerworks/cn/mobile/mo-cn-swift/index.html&lt;/a&gt;。如需转载请保留此行声明。&lt;/p&gt;
+
+&lt;h2&gt;Swift 2 错误处理简介&lt;/h2&gt;
+
+&lt;p&gt;throws 关键字和异常处理机制是 Swift 2 中新加入的重要特性。Apple 希望通过在语言层面对异常处理的流程进行规范和统一，来让代码更加安全，同时让开发者可以更加及时可靠地处理这些错误。Swift 2 中所有的同步 Cocoa API 的 &lt;code&gt;NSError&lt;/code&gt; 都已经被 throw 关键字取代，举个例子，在文件操作中复制文件的 API 在 Swift 1 中使用的是和 Objective-C 类似的 &lt;code&gt;NSError&lt;/code&gt; 指针方式：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func copyItemAtPath(_ srcPath: String, toPath dstPath: String, error: NSErrorPointer)
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;而在 Swift 2 中，变为了 throws：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func copyItemAtPath(_ srcPath: String, toPath dstPath: String) throws
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;使用时，Swift 1.x 中我们需要创建并传入 &lt;code&gt;NSError&lt;/code&gt; 的指针，在方法调用后检查指针的内容，来判断是否成功：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;let fileManager = NSFileManager.defaultManager()
+var error: NSError?
+fileManager.copyItemAtPath(srcPath, toPath: dstPath, error: &amp;amp;error)
+if error != nil {
+    // 发生了错误
+} else {
+    // 复制成功
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;在实践中，因为这个 API 仅会在极其特定的条件下 (比如磁盘空间不足) 会出错，所以开发者为了方便，有时会直接传入 nil 来忽视掉这个错误：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;let fileManager = NSFileManager.defaultManager()
+// 不关心是否发生错误
+fileManager.copyItemAtPath(srcPath, toPath: dstPath, error: nil)
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;这种做法无形中降低了应用的可靠性以及从错误中恢复的能力。为了解决这个问题，Swift 2 中在编译器层级就对 throws 进行了限定。被标记为 throws 的 API，我们需要完整的 &lt;code&gt;try catch&lt;/code&gt; 来捕获可能的异常，否则无法编译通过：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;let fileManager = NSFileManager.defaultManager()
+do {
+    try fileManager.copyItemAtPath(srcPath, toPath: dstPath)
+} catch let error as NSError {
+    // 发生了错误
+    print(error.localizedDescription)
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;对于非 Cocoa 框架的 API，我们也可以通过声明 &lt;code&gt;ErrorType&lt;/code&gt; 并在出错时进行 throw 操作。这为错误处理提供了统一的处理出口，有益于提高应用质量。&lt;/p&gt;
+
+&lt;h2&gt;throws 技术内幕&lt;/h2&gt;
+
+&lt;p&gt;throws 关键字究竟做了些什么，我们可以用稍微底层一点的手法来进行一些探索。&lt;/p&gt;
+
+&lt;h3&gt;Swift 编译器，SIL 及汇编&lt;/h3&gt;
+
+&lt;p&gt;所有的 Swift 源文件都要经过 Swift 编译器编译后才能执行。Swift 编译过程遵循非常经典的 LLVM 编译架构：编译器前端首先对 Swift 源码进行词法分析和语法分析，生成 Swift 抽象语法树 (AST)，然后从 AST 生成 Swift 中间语言 (Swift Intermediate Language，SIL)，接下来 SIL 被翻译成通用的 LLVM 中间表述 (LLVM Intermediate Representation, LLVM IR)，最后通过编译器后端的优化，得到汇编语言。整个过程可以用下面的框图来表示：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2016/compiler-flow.png&quot; alt=&quot;&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;Swift 编译器提供了非常灵活的命令行工具：swiftc，这个命令行工具可以运行在不同模式下，我们通过控制命令行参数能获取到 Swift 源码编译到各个阶段的结果。使用 &lt;code&gt;swiftc --help&lt;/code&gt; 我们能得知各个模式的使用方法，这篇文章会用到下面几个模式，它们分别将 Swift 源代码编译为 SIL，LLVM IR 和汇编语言。&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-sh&quot; data-lang=&quot;sh&quot;&gt;&amp;gt; swiftc --help
+...
+MODES:
+  -emit-sil        Emit canonical SIL file(s)
+  -emit-ir         Emit LLVM IR file(s)
+  -emit-assembly   Emit assembly file(s) (-S)
+ ...
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;在 Swift 开源之前，将源码编译到各个阶段是探索 Swift 原理和实现方式的重要方式。即使是在 Swift 开源后的今天，在面对一段代码时，想要知道编译结果和底层的行为，最快的方式还是查看编译后的语句。我们接下来将会分析一段简单的 throw 代码，来看看 Swift 的异常机制到底是如何运作的。&lt;/p&gt;
+
+&lt;h3&gt;throw，try，catch 深层解析&lt;/h3&gt;
+
+&lt;p&gt;为了保持问题的简单，我们定义一个最简单的 &lt;code&gt;ErrorType&lt;/code&gt; 并用一个方法来将其抛出，源代码如下：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;// throw.swift
+
+enum MyError: ErrorType {
+    case SampleError
+}
+
+func throwMe(shouldThrow: Bool) throws -&amp;gt; Bool {
+    if shouldThrow {
+        throw MyError.SampleError    
+    }
+    return true
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;使用 swiftc 将其编译为 SIL：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-sh&quot; data-lang=&quot;sh&quot;&gt;swiftc -emit-sil -O -o ./throw.sil ./throw.swift
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;在输出文件中，可以找到 &lt;code&gt;throwMe&lt;/code&gt; 的对应 Swift 中间语言表述：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-text&quot; data-lang=&quot;text&quot;&gt;// throw.throwMe (Swift.Bool) throws -&amp;gt; Swift.Bool
+sil hidden @_TF5throw7throwMeFzSbSb :
+                    $@convention(thin) (Bool) -&amp;gt; (Bool, @error ErrorType) {
+bb0(%0 : $Bool):
+  debug_value %0 : $Bool  // let shouldThrow      // id: %1
+  %2 = struct_extract %0 : $Bool, #Bool.value     // user: %3
+  cond_br %2, bb1, bb2                            // id: %3
+
+bb1:                                              // Preds: bb0
+  ...
+  throw %4#0 : $ErrorType                         // id: %7
+
+bb2:                                              // Preds: bb0
+  ...
+  return %9 : $Bool                               // id: %10
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;&lt;code&gt;_TF5throw7throwMeFzSbSb&lt;/code&gt; 是 &lt;code&gt;throwMe&lt;/code&gt; 方法 &lt;a href=&quot;https://mikeash.com/pyblog/friday-qa-2014-08-15-swift-name-mangling.html&quot;&gt;Mangling&lt;/a&gt; 以后的名字。在去掉一些噪音后，我们可以将这个方法的签名等效看做：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;throwMe(shouldThrow: Bool) -&amp;gt; (Bool, ErrorType)
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;它其实是返回的是一个 &lt;code&gt;(Bool, ErrorType)&lt;/code&gt; 的多元组。和一般的多元组不同的是，第二个元素 &lt;code&gt;ErrorType&lt;/code&gt; 被一个 &lt;code&gt;@error&lt;/code&gt; 修饰了。这个修饰让多元组具有了“排他性”，也就是只要多元组的第一个元素被返回即可：在条件分支 &lt;code&gt;bb2&lt;/code&gt; (也即没有抛出异常的正常分支) 中，仅只有 Bool 值被返回了。而对于发生错误需要抛出的处理，SIL 层面还并没有具体实现，只是生成了对应的错误枚举对象，然后对其调用了 throw 命令。&lt;/p&gt;
+
+&lt;p&gt;这就是说，我们想要探索 throw 的话，还需要更深入一层。用 swiftc 将源代码编译为 LLVM IR：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-text&quot; data-lang=&quot;text&quot;&gt;swiftc -emit-ir -O -o ./throw.ir ./throw.swift
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;结果中 &lt;code&gt;throwMe&lt;/code&gt; 的关键部分为：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-text&quot; data-lang=&quot;text&quot;&gt;define hidden i1 @_TF5throw7throwMeFzSbSb(i1,
+    %swift.refcounted* nocapture readnone, %swift.error** nocapture) #0 {
+
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;这是我们非常熟悉的形式，参数中的 &lt;code&gt;swift.error**&lt;/code&gt; 和 Swift 1 以及 Objective-C 中使用 &lt;code&gt;NSError&lt;/code&gt; 指针来获取和存储错误的做法是一致的。在示例的这种情况下，LLVM 后端针对 swift.error 进行了额外处理，最终得到的汇编码的伪码是这样的 (在未启用 -O 优化的条件下)：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-text&quot; data-lang=&quot;text&quot;&gt;int __TF5throw7throwMeFzSbSb(int arg0) {
+    rax = arg0;
+    var_8 = rdx;
+    if ((rax &amp;amp; 0x1) == 0x0) {
+            rax = 0x1;
+    }
+    else {
+            rax = swift_allocError(0x1000011c8, __TWPO5throw7MyErrorSs9ErrorTypeS_);
+            var_18 = rax;
+            swift_willThrow(rax);
+            rax = var_8;
+            *rax = var_18;
+    }
+    return rax;
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;函数最终的返回是一个 int，它有可能是一个实际的整数值，也有可能是一个指向错误地址的指针。这和 Swift 1 中传入 &lt;code&gt;NSErrorPointer&lt;/code&gt; 来存储错误指针地址有明显不同：首先直接使用返回值我们就可以判断调用是否出现错误，而不必使用额外的空间进行存储；其次整个过程中没有使用到 &lt;code&gt;NSError&lt;/code&gt; 或者 Objective-C Runtime 的任何内容，在性能上要优于传统的错误处理方式。&lt;/p&gt;
+
+&lt;p&gt;我们在了解了 throw 的底层机理后，对于 &lt;code&gt;try catch&lt;/code&gt; 代码块的理解自然也就水到渠成了。加入一个 &lt;code&gt;try catch&lt;/code&gt; 后的 SIL 相关部分是：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-text&quot; data-lang=&quot;text&quot;&gt;try_apply %15(%16) : $@convention(thin) (Bool) -&amp;gt; (Bool, @error ErrorType), normal bb1, error bb9 // id: %17
+
+bb1(%18 : $Bool):
+...
+bb9(%80 : $ErrorType):
+...
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;其他层级的实现也与此类似，都是对返回值进行类型判断，然后进入不同的条件分支进行处理。&lt;/p&gt;
+
+&lt;h2&gt;ErrorType 和 NSError&lt;/h2&gt;
+
+&lt;p&gt;throw 语句的作用对象是一个实现了 &lt;code&gt;ErrorType&lt;/code&gt; 接口的值，本节将探讨 &lt;code&gt;ErrorType&lt;/code&gt; 背后的内容，以及 &lt;code&gt;NSError&lt;/code&gt; 与它的关系。在 Swift 公开的标准库中，&lt;code&gt;ErrorType&lt;/code&gt; 接口并没有公开的方法：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;public protocol ErrorType {
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;这个接口有一个 extension，但是也没有公开的内容：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;extension ErrorType {
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;我们可以通过使用 LLDB 的类型检索来获取关于这个接口的更多信息。在调试器中运行 &lt;code&gt;type lookup ErrorType&lt;/code&gt;：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-text&quot; data-lang=&quot;text&quot;&gt;(lldb) type lookup ErrorType
+protocol ErrorType {
+  var _domain: Swift.String { get }
+  var _code: Swift.Int { get }
+}
+extension ErrorType {
+  var _domain: Swift.String {
+    get {}
+  }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;可以看到这个接口实际上需要实现两个属性：domain 描述错误的所属域，code 标记具体的错误号，这和传统的 &lt;code&gt;NSError&lt;/code&gt; 中定义一个错误所需要的内容是一致的。事实上 &lt;code&gt;NSError&lt;/code&gt; 在 Swift 2 中也实现了 &lt;code&gt;ErrorType&lt;/code&gt; 接口，它简单地返回错误的域和错误代码信息，这是 Swift 1 到 2 的错误处理相关 API 转换的兼容性的保证。&lt;/p&gt;
+
+&lt;p&gt;虽然 Cocoa/CocoaTouch 框架中的 throw API 抛出的都是 &lt;code&gt;NSError&lt;/code&gt;，但是应用开发者更为常用的表述错误的类型应该是 enum，这也是 Apple 对于 throw 的推荐用法。对于实现了 &lt;code&gt;ErrorType&lt;/code&gt; 的 enum 类型，其错误代码将根据 enum 中 case 声明的顺序从 0 开始编号，而错误域的名字就是它的类型全名 (Module 名 + 类型名)：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;MyError.InvalidUser._code: 0
+MyError.InvalidUser._domain: ModuleName.MyError
+
+MyError.InvalidPassword._code: 1
+MyError.InvalidPassword._domain: ModuleName.MyError
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;这虽然为按照错误号来处理错误提供了可能性，但是我们在实践中应当尽量依赖 enum case 而非错误号来对错误进行辨别，这可以提高稳定性，同时降低维护的压力。除了 enum 以外，struct 和 class 也是可以实现 &lt;code&gt;ErrorType&lt;/code&gt; 接口，并作为被 throw 的对象的。在使用非 enum 值来表示错误的时候，我们可能需要显式地指定 &lt;code&gt;_code&lt;/code&gt; 和 &lt;code&gt;_domain&lt;/code&gt;，以区分不同的错误。&lt;/p&gt;
+
+&lt;h2&gt;throws 的一些实践&lt;/h2&gt;
+
+&lt;h3&gt;异步操作中的异常处理&lt;/h3&gt;
+
+&lt;p&gt;带有 throw 的方法现在只能工作在同步 API 中，这受限于异常抛出方法的基本思想。一个可以抛出的方法实际上做的事情是执行一个闭包，接着选择返回一个值或者是抛出一个异常。直接使用一个 throw 方法，我们无法在返回或抛出之前异步地执行操作并根据操作的结果来决定方法行为。要改变这一点，理论上我们可以通过将闭包的执行和对结果的操作进行分离，来达到“异步抛出”的效果。假设有一个同步方法可以抛出异常：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func syncFunc&amp;lt;A, R&amp;gt;(arg: A) throws -&amp;gt; R
+
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;通过为其添加一次调用，可以将闭包执行部分和结果判断及返回部分分离：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func syncFunc&amp;lt;A, R&amp;gt;(arg: A)() throws -&amp;gt; R
+
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;这相当于将原来的方法改写为了：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func syncFunc&amp;lt;A, R&amp;gt;(arg: A) -&amp;gt; (Void throws -&amp;gt; R)
+
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;这样，单次对 &lt;code&gt;syncFunc&lt;/code&gt; 的调用将返回一个 &lt;code&gt;Void throws -&amp;gt; R&lt;/code&gt; 类型的方法，这使我们有机会执行代码而不是直接返回或抛出。在执行 &lt;code&gt;syncFunc&lt;/code&gt; 返回后，我们还需要对其结果用 &lt;code&gt;try&lt;/code&gt; 来进行判断是否抛出异常。利用这个特点，我们就可以将这个同步的抛出方法改写为异步形式：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func asyncFunc&amp;lt;A, R&amp;gt;(arg: A, callback: (Void throws -&amp;gt; R) -&amp;gt; Void) {
+    // 处理操作
+    let result: () throws -&amp;gt; R = {
+        // 根据结果抛出异常或者正常返回
+    }
+    return callback(result)
+}
+
+// 调用
+asyncFunc(arg: someArg) { (result) -&amp;gt; Void in
+    do {
+        let r = try result()
+        // 正常返回
+    } catch _ {
+        // 出现异常
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;绕了一大个圈子，我们最后发现这么做本质上其实和简单地使用 &lt;code&gt;Result&amp;lt;T, E&amp;gt;&lt;/code&gt; 来表示异步方法的结果并没有本质区别，反而增加了代码阅读和理解的难度，也破坏了 Swift 异常机制原本的设计意图，其实并不是可取的选项。除开某些非常特殊的用例外，对于异步 API 现在并不适合使用 throw 来进行错误判断。&lt;/p&gt;
+
+&lt;h3&gt;异常处理的测试&lt;/h3&gt;
+
+&lt;p&gt;在 XCTest 中暂时还没有直接对 Swift 2 异常处理进行测试的方法，如果想要测试某个调用应当/不应当抛出某个异常的话，我们可以对 XCTest 框架的方法进行一些额外但很简单包装，传入 block 并运行，然后在 try 块或是 catch 块内进行 XCTAssert 的断言检测。在 Apple 开发者论坛有关于这个问题的更&lt;a href=&quot;https://forums.developer.apple.com/thread/5824&quot;&gt;详细的讨论&lt;/a&gt;，完整的示例代码和使用例子可以在&lt;a href=&quot;https://gist.github.com/onevcat/128ab20a4a9177ca3c82&quot;&gt;这里&lt;/a&gt;找到。&lt;/p&gt;
+
+&lt;h3&gt;类型安全的异常抛出&lt;/h3&gt;
+
+&lt;p&gt;Swift 2 中异常另一个严重的不足是类型不安全。throw 语句可以作用于任意满足 &lt;code&gt;ErrorType&lt;/code&gt; 的类型，你可以 throw 任意域的错误。而在 catch 块中我们也同样可以匹配任意的错误类型，这一切都没有编译器保证。由于这个原因，现在的异常处理机制并不好用，需要处理异常的开发者往往需要通读文档才能知道可能会有哪些异常，而文档的维护又是额外的工作。缺少强制机制来保证异常抛出和捕获的类型的正确性，这为程序中 bug 的出现埋下了隐患。&lt;/p&gt;
+
+&lt;p&gt;事实上从我们之前对 throw 底层实现的分析来看，在语言层面上实现只抛出某一特定类型的错误并不是很困难的事情。但是考虑到与 &lt;code&gt;NSError&lt;/code&gt; 和传统错误处理 API 兼容问题，Swift 2 中并没有这样实现，也许我们在之后的 Swift 版本中能看到限定类型的异常机制。&lt;/p&gt;
+
+&lt;h3&gt;异常的调试和断点&lt;/h3&gt;
+
+&lt;p&gt;Swift 的异常抛出并不是传统意义的 exception，在调试时抛出异常并不会触发 Exception 断点。另外，throw 本身是语言的关键字，而不是一个 symbol，它也不能触发 Symbolic 类型的断点。如果我们希望在所有 throw 语句执行的时候让程序停住的话，需要一些额外的技巧。在之前 throw 的汇编实现中，可以看到所有 throw 语句在返回前都会进行一次 &lt;code&gt;swift_willThrow&lt;/code&gt; 的调用，这就是一个有效的 Symbolic 语句，我们设置一个 &lt;code&gt;swift_willThrow&lt;/code&gt; 的 Symbolic 断点，就可以让程序在 throw 的时候停住，并使用调用栈信息来获知程序在哪里抛出了异常。&lt;/p&gt;
+
+&lt;blockquote&gt;
+&lt;p&gt;补充，在最新版本的 Xcode 中，Apple 直接为我们在断点类型中加上了 “Swift Error Breakpoint” 的选项，它背后做的就是在 &lt;code&gt;swift_willThrow&lt;/code&gt; 上添加一个断点。不过因为有了更直接的方法，我们现在不再需要手动去添加这个符号断点了。&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2016/swift-error-breakpoint.png&quot; alt=&quot;&quot;&gt;&lt;/p&gt;
+
+&lt;h2&gt;参考资料&lt;/h2&gt;
+
+&lt;ul&gt;
+&lt;li&gt;MikeAsh Friday Q&amp;amp;A，Swift 中 Name Mangling 的定义和使用：&lt;a href=&quot;https://mikeash.com/pyblog/friday-qa-2014-08-15-swift-name-mangling.html&quot;&gt;Friday Q&amp;amp;A: Swift Name Mangling&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;Apple 开发者论坛，关于 Swift 中 throw 的测试方法：&lt;a href=&quot;https://forums.developer.apple.com/thread/5824&quot;&gt;How to write a unit test which passes if a function throws?&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+        <pubDate>Tue, 29 Mar 2016 14:37:24 +0800</pubDate>
+        <link>http://vno.onevcat.com/2016/03/swift-throws/</link>
+        <guid isPermaLink="true">http://vno.onevcat.com/2016/03/swift-throws/</guid>
+        
+        <category>能工巧匠集</category>
+        
+        
+      </item>
+    
+      <item>
+        <title>Swift 性能探索和优化分析</title>
+        <description>&lt;p&gt;&lt;img src=&quot;https://onevcat.com/assets/images/2016/taylor-swift.jpg&quot; alt=&quot;&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;本文首发在 CSDN《程序员》杂志，订阅地址 &lt;a href=&quot;http://dingyue.programmer.com.cn/&quot;&gt;http://dingyue.programmer.com.cn/&lt;/a&gt;。&lt;/p&gt;
+
+&lt;p&gt;Apple 在推出 Swift 时就将其冠以先进，安全和高效的新一代编程语言之名。前两点在 Swift 的语法和语言特性中已经表现得淋漓尽致：像是尾随闭包，枚举关联值，可选值和强制的类型安全等都是 Swift 显而易见的优点。但是对于高效一点，就没有那么明显了。在 2014 年 WWDC 大会上 Apple 宣称 Swift 具有超越 Objective-C 的性能，甚至某些情况下可以媲美和超过 C。但是在 Swift 正式发布后，很多开发者发现似乎 Swift 性能并没有像宣传的那样优秀。甚至在 Swift 经过了一年半的演进的今天，稍有不慎就容易掉进语言性能的陷阱中。本文将分析一些使用 Swift 进行 iOS/OS X 开发时性能上的考量和做法，同时，笔者结合自己这一年多来使用 Swift 进行开发的经验，也给出了一些对应办法。&lt;/p&gt;
+
+&lt;h2&gt;为什么 Swift 的性能值得期待&lt;/h2&gt;
+
+&lt;p&gt;Swift 具有一门高效语言所需要具备的绝大部分特点。与 Ruby 或者 Python 这样的解释型语言不需要再做什么对比了，相较于其前辈的 Objective-C，Swift 在编译期间就完成了方法的绑定，因此方法调用上不再是类似于 Smalltalk 的消息发送，而是直接获取方法地址并进行调用。虽然 Objective-C 对运行时查找方法的过程进行了缓存和大量的优化，但是不可否认 Swift 的调用方式会更加迅速和高效。&lt;/p&gt;
+
+&lt;p&gt;另外，与 Objective-C 不同，Swift 是一门强类型的语言，这意味 Swift 的运行时和代码编译期间的类型是一致的，这样编译器可以得到足够的信息来在生成中间码和机器码时进行优化。虽然都使用 LLVM 工具链进行编译，但是 Swift 的编译过程相比于 Objective-C 要多一个环节 -- 生成 Swift 中间代码 (Swift Intermediate Language，SIL)。SIL 中包含有很多根据类型假定的转换，这为之后进一步在更低层级优化提供了良好的基础，分析 SIL 也是我们探索 Swift 性能的有效方法。&lt;/p&gt;
+
+&lt;p&gt;最后，Swift 具有良好的内存使用的策略和结构。Swift 标准库中绝大部分类型都是 &lt;code&gt;struct&lt;/code&gt;，对值类型的使用范围之广，在近期的编程语言中可谓首屈一指。原本值类型不可变性的特点，往往导致对于值的使用和修改意味着创建新的对象，但是 Swift 巧妙地规避了不必要的值类型复制，而仅只在必要时进行内存分配。这使得 Swift 在享受不可变性带来的便利以及避免不必要的共享状态的同时，还能够保持性能上的优秀。&lt;/p&gt;
+
+&lt;h2&gt;对性能进行测试&lt;/h2&gt;
+
+&lt;p&gt;《计算机程序设计艺术》和 TeX 的作者&lt;a href=&quot;https://zh.wikipedia.org/wiki/%E9%AB%98%E5%BE%B7%E7%BA%B3&quot;&gt;高德纳&lt;/a&gt;曾经在论文中说过：&lt;/p&gt;
+
+&lt;blockquote&gt;
+&lt;p&gt;过早的优化是万恶之源。&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;和很多人理解的不同，这并不是说我们不应该在项目的早期就开始进行优化，而是指我们需要弄清代码中性能真正的问题和希望达到的目标后再开始进行优化。因此，我们需要知道性能问题到底出在哪儿。对程序性能的测试一定是优化的第一步。&lt;/p&gt;
+
+&lt;p&gt;在 Cocoa 开发中，对于性能的测试有几种常见的方式。其中最简单是直接通过输出 log 来监测某一段程序运行所消耗的时间。在 Cocoa 中我们可以使用 &lt;a href=&quot;https://developer.apple.com/library/mac/documentation/Cocoa/Reference/CoreAnimation_functions/index.html#//apple_ref/c/func/CACurrentMediaTime&quot;&gt;&lt;code&gt;CACurrentMediaTime&lt;/code&gt;&lt;/a&gt; 来获取精确的时间。这个方法将会调用 mach 底层的 &lt;code&gt;mach_absolute_time()&lt;/code&gt;，它的返回是一个基于 &lt;a href=&quot;https://developer.apple.com/library/mac/qa/qa1398/_index.html&quot;&gt;Mach absolute time unit&lt;/a&gt; 的数字，我们通过在方法调用前后分别获取两次时刻，并计算它们的间隔，就可以了解方法的执行时间：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;let start = CACurrentMediaTime()
+
+// ...
+
+let end = CACurrentMediaTime()
+
+print(&amp;quot;测量时间：\(end - start)&amp;quot;)
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;为了方便使用，我们还可以将这段代码封装到一个方法中，这样我们就能在项目中需要测试性能的地方方便地使用它了：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func measure(f: ()-&amp;gt;()) {
+    let start = CACurrentMediaTime()
+    f()
+    let end = CACurrentMediaTime()
+    print(&amp;quot;测量时间：\(end - start)&amp;quot;)
+}
+
+measure {
+    doSomeHeavyWork()
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;&lt;code&gt;CACurrentMediaTime&lt;/code&gt; 和 log 的方法适合于我们对既有代码进行探索，另一种有效的方法是使用 Instruments 的 Time Profiler 来在更高层面寻找代码的性能弱点。将程序挂载到 Time Profiler 后，每一个方法调用的耗时都将被记录。&lt;/p&gt;
+
+&lt;p&gt;当我们寻找到需要进行优化的代码路径后，为其建立一个单元测试来持续地检测代码的性能是很好的做法。在 Xcode 中默认的测试框架 XCTest 提供了检测并汇报性能的方法：&lt;code&gt;measureBlock&lt;/code&gt;。通过将测试的代码块放到 &lt;code&gt;measureBlock&lt;/code&gt; 中，Xcode 在测试时就会多次运行这段代码，并统计平均耗时。更方便的是，你可以设定一个基准，Xcode 会记录每次的耗时并在性能没有达到预期时进行提醒。这保证了随着项目开发，关键的代码路径不会发生性能上的退化。&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func testPerformance() {
+    measureBlock() {
+        // 需要性能测试的代码
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;&lt;img src=&quot;https://onevcat.com/assets/images/2016/test-measure.png&quot; alt=&quot;&quot;&gt;&lt;/p&gt;
+
+&lt;h2&gt;优化手段，常见误用及对策&lt;/h2&gt;
+
+&lt;h3&gt;多线程、算法及数据结构优化&lt;/h3&gt;
+
+&lt;p&gt;在确定了需要进行性能改善的代码后，一个最根本的优化方式是在程序设计层面进行改良。在移动客户端，对于影响了 UI 流畅度的代码，我们可以将其放到后台线程进行运行。Grand Central Dispatch (GCD) 或者 &lt;code&gt;NSOperation&lt;/code&gt; 可以让我们方便地在不同线程中切换，而不太需要去担心线程调度的问题。一个使用 GCD 将繁重工作放到后台线程，然后在完成后回到主线程操作 UI 的典型例子是这样的：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;let queue = dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0)
+    dispatch_async(queue) {
+
+        // 运行时间较长的代码，放到后台线程运行
+
+        dispatch_async(dispatch_get_main_queue()) {
+            // 结束后返回主线程操作 UI
+        }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;将工作放到其他线程虽然可以避免主线程阻塞，但它并不能减少这些代码实际的执行时间。进一步地，我们可以考虑改进算法和使用的数据结构来提高效率。根据实际项目中遇到的问题的不同，我们会有不同的解决方式，在这篇文章中，我们难以覆盖和深入去分析各种情况，所以这里我们只会提及一些共通的原则。&lt;/p&gt;
+
+&lt;p&gt;对于重复的工作，合理地利用缓存的方式可以极大提高效率，这是在优化时可以优先考虑的方式。Cocoa 开发中 &lt;code&gt;NSCache&lt;/code&gt; 是专门用来管理缓存的一个类，合理地使用和配置 &lt;code&gt;NSCache&lt;/code&gt; 把开发者中从管理缓存存储和失效的工作中解放出来。关于 &lt;code&gt;NSCache&lt;/code&gt; 的详细使用方法，可以参看 NSHipster 关于这方面的&lt;a href=&quot;http://nshipster.com/nscache/&quot;&gt;文章&lt;/a&gt;以及 Apple 的&lt;a href=&quot;https://developer.apple.com/library/ios/documentation/Cocoa/Reference/NSCache_Class/&quot;&gt;相关文档&lt;/a&gt;。&lt;/p&gt;
+
+&lt;p&gt;在程序开发时，数据结构使用上的选择也是重要的一环。Swift 标准库提供了一些很基本的数据结构，比如 &lt;code&gt;Array&lt;/code&gt;、&lt;code&gt;Dictionary&lt;/code&gt; 和 &lt;code&gt;Set&lt;/code&gt; 等。这些数据结构都是配合泛型的，在保证数据类型安全的同时，一般来说也能为我们提供足够的性能。关于这些数据的容器类型方法所对应的复杂度，Apple 都在标准库的文档或者注释中进行了标记。如果标准库所提供的类型和方法无法满足性能上的要求，或者没有符合业务需求的数据结构的话，那么考虑使用自己实现的数据结构也是可选项。&lt;/p&gt;
+
+&lt;p&gt;如果项目中有很多数学计算方面的工作导致了效率问题的话，考虑并行计算能极大改善程序性能。iOS 和 OS X 都有针对数学或者图形计算等数字信号处理方面进行了专门优化的框架：&lt;a href=&quot;https://developer.apple.com/library/tvos/documentation/Accelerate/Reference/AccelerateFWRef/index.html&quot;&gt;Accelerate.framework&lt;/a&gt;，利用相关的 API，我们可以轻松快速地完成很多经典的数字或者图像处理问题。因为这个框架只提供一组 C API，所以在 Swift 中直接使用会有一定困难。如果你的项目中要处理的计算相对简单的话，也可以使用 &lt;a href=&quot;https://github.com/mattt/Surge&quot;&gt;Surge&lt;/a&gt;，它是一个基于 Accelerate 框架的 Swift 项目，让我们能在代码里从并行计算中获得难以置信的性能提升。&lt;/p&gt;
+
+&lt;h3&gt;编译器优化&lt;/h3&gt;
+
+&lt;p&gt;Swift 编译器十分智能，它能在编译期间帮助我们移除不需要的代码，或者将某些方法进行内联 (inline) 处理。编译器优化的强度可以在编译时通过参数进行控制，Xcode 工程默认情况下有 Debug 和 Release 两种编译配置，在 Debug 模式下，LLVM Code Generation 和 Swift Code Generation 都不开启优化，这能保证编译速度。而在 Release 模式下，LLVM 默认使用 &amp;quot;Fastest, Smallest [-Os]&amp;quot;，Swift Compiler 默认使用 &amp;quot;Fast [-O]&amp;quot;，作为优化级别。我们另外还有几个额外的优化级别可以选择，优化级别越高，编译器对于源码的改动幅度和开启的优化力度也就越大，同时编译期间消耗的时间也就越多。虽然绝大部分情况下没有问题，但是仍然需要当心的是，一些优化等级采用的是激进的优化策略，而禁用了一些检查。这可能在源码很复杂的情况下导致潜在的错误。如果你使用了很高的优化级别，请再三测试 Release 和 Debug 条件下程序运行的逻辑，以防止编译器优化所带来的问题。&lt;/p&gt;
+
+&lt;p&gt;值得一提的是，Swift 编译器有一个很有用的优化等级：&amp;quot;Fast, Whole Module Optimization&amp;quot;，也即 &lt;code&gt;-O -whole-module-optimization&lt;/code&gt;。在这个优化等级下，Swift 编译器将会同时考虑整个 module 中所有源码的情况，并将那些没有被继承和重载的类型和方法标记为 &lt;code&gt;final&lt;/code&gt;，这将尽可能地避免动态派发的调用，或者甚至将方法进行内联处理以加速运行。开启这个额外的优化将会大幅增加编译时间，所以应该只在应用要发布的时候打开这个选项。&lt;/p&gt;
+
+&lt;p&gt;虽然现在编译器在进行优化的时候已经足够智能了，但是在面对编写得非常复杂的情况时，很多本应实施的优化可能失效。因此保持代码的整洁、干净和简单，可以让编译器优化良好工作，以得到高效的机器码。&lt;/p&gt;
+
+&lt;h3&gt;尽量使用 Swift 类型&lt;/h3&gt;
+
+&lt;p&gt;为了和 Objective-C 协同工作，很多 Swift 标准库类型和对应的 Cocoa 类型是可以隐式的类型转换的，比如 &lt;code&gt;Swift.Array&lt;/code&gt; 与 &lt;code&gt;NSArray&lt;/code&gt;，&lt;code&gt;Swift.String&lt;/code&gt; 和 &lt;code&gt;NSString&lt;/code&gt; 等。虽然我们不需要在语言层面做类型转换，但是这个过程却不是免费的。在转换次数很多的时候，这往往会成为性能的瓶颈。一个常见的 Swift 和 Objective-C 混用的例子是 JSON 解析。考虑以下代码：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;let jsonData: NSData = //...
+let jsonObject = try? NSJSONSerialization
+        .JSONObjectWithData(jsonData, options: []) as? [String: AnyObject]
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;这是我们日常开发中很常见的代码，使用 &lt;code&gt;NSJSONSerialization&lt;/code&gt; 将数据转换为 JSON 对象后，我们得到的是一个 NSObject 对象。在 Swift 中使用时，我们一般会先将其转换为 &lt;code&gt;[String: AnyObject]&lt;/code&gt;，这个转换在一次性处理成千上万条 JSON 数据时会带来严重的性能退化。Swift 3 中我们可能可以基于 Swift 的 Foundation 框架来解决这个问题，但是现在，如果存在这样的情况，一种处理方式是避免使用 Swift 的字典类型，而使用 &lt;code&gt;NSDictionary&lt;/code&gt;。另外，适当地使用 lazy 加载的方法，也是避免一次性进行过多的类型转换的好思路。&lt;/p&gt;
+
+&lt;p&gt;尽可能避免混合地使用 Swift 类型和 &lt;code&gt;NSObject&lt;/code&gt; 子类，会对性能的提高有所帮助。&lt;/p&gt;
+
+&lt;h3&gt;避免无意义的 log，保持好的编码习惯&lt;/h3&gt;
+
+&lt;p&gt;在调试程序时，很多开发者喜欢用输出 log 的方式对代码的运行进行追踪，帮助理解。Swift 编译器并不会帮我们将 &lt;code&gt;print&lt;/code&gt; 或者 &lt;code&gt;debugPrint&lt;/code&gt; 删去，在最终 app 中它们会把内容输出到终端，造成性能的损失。我们当然可以在发布时用查找的方式将所有这些 log 输出语句删除或者注释掉，但是更好的方法是通过添加条件编译来将这些语句排除在 Release 版本外。在 Xcode 的 Build Setting 中，在 &lt;strong&gt;Other Swift flags&lt;/strong&gt; 的 Debug 栏中加入 &lt;code&gt;-D DEBUG&lt;/code&gt; 即可加入一个编译标识。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;https://onevcat.com/assets/images/2016/debug-flag.png&quot; alt=&quot;&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;之后我们就可以通过将 &lt;code&gt;print&lt;/code&gt; 或者 &lt;code&gt;debugPrint&lt;/code&gt; 包装一下：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func dPrint(item: Any) {
+    #if DEBUG
+    print(item)
+    #endif
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;这样，在 Release 版本中，&lt;code&gt;dPrint&lt;/code&gt; 将会是一个空方法，所有对这个方法的调用都会被编译器剔除掉。需要注意的是，在这种封装下，如果你传入的 &lt;code&gt;items&lt;/code&gt; 是一个表达式而不是直接的变量的话，这个表达式还是会被先执行求值的。如果这对性能也产生了可测的影响的话，我们最好用 &lt;code&gt;@autoclosure&lt;/code&gt; 修饰参数来重新包装 &lt;code&gt;print&lt;/code&gt;。这可以将求值运行推迟到方法内部，这样在 Release 时这个求值也会被一并去掉：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func dPrint(@autoclosure item: () -&amp;gt; Any) {
+    #if DEBUG
+    print(item())
+    #endif
+}
+
+dPrint(resultFromHeavyWork())
+// Release 版本中 resultFromHeavyWork() 不会被执行
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;h2&gt;小结&lt;/h2&gt;
+
+&lt;p&gt;Swift 还是一门很新的语言，并且处于高速发展中。因为现在 Swift 只用于 Cocoa 开发，因此它和 Cocoa 框架还有着千丝万缕的联系。很多时候由于这些原因，我们对于 Swift 性能的评估并不公正。这门语言本身设计就是以高性能为考量的，而随着 Swift 的开源和进一步的进化，以及配套框架的全面重写，相信在语言层面上我们能获得更好的性能和编译器的支持。&lt;/p&gt;
+
+&lt;p&gt;最好的优化就是不用优化。在软件开发中，保证书写正确简洁的代码，在项目开始阶段就注意可能存在的性能缺陷，将可扩展性的考虑纳入软件构建中，按照实际需求进行优化，不要陷入为了优化而优化的怪圈，这些往往都可以让我们避免额外的优化时间，让我们的工作得更加愉快。&lt;/p&gt;
+
+&lt;h3&gt;参考&lt;/h3&gt;
+
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&quot;http://llvm.org/devmtg/2015-10/slides/GroffLattner-SILHighLevelIR.pdf&quot;&gt;Swift Intermediate Language&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&quot;http://nshipster.com/nscache/&quot;&gt;NSCache - NSHipster&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&quot;https://developer.apple.com/library/ios/documentation/Cocoa/Reference/NSCache_Class/&quot;&gt;NSCache 文档&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&quot;https://github.com/mattt/Surge&quot;&gt;Surge&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+        <pubDate>Thu, 25 Feb 2016 10:32:24 +0800</pubDate>
+        <link>http://vno.onevcat.com/2016/02/swift-performance/</link>
+        <guid isPermaLink="true">http://vno.onevcat.com/2016/02/swift-performance/</guid>
+        
+        <category>能工巧匠集</category>
+        
+        
+      </item>
+    
+      <item>
+        <title>如何打造一个让人愉快的框架</title>
+        <description>&lt;blockquote&gt;
+&lt;p&gt;这是我在今年 1 月 10 日 &lt;a href=&quot;http://atswift.io&quot;&gt;@Swift 开发者大会&lt;/a&gt; 上演讲的文字稿。相关的视频还在制作中，没有到现场的朋友可以通过这个文字稿了解到这个 session 的内容。&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;script async class=&quot;speakerdeck-embed&quot; data-id=&quot;809c2dfa8e5f46cf98e92898079c943a&quot; data-ratio=&quot;1.33333333333333&quot; src=&quot;//speakerdeck.com/assets/embed.js&quot;&gt;&lt;/script&gt;
+
+&lt;p&gt;&lt;br\&gt;&lt;/p&gt;
+
+&lt;p&gt;虽然我的工作是程序员，但是最近半年其实我的主要干的事儿是养了一个小孩。
+所以这半年来可以说没有积累到什么技术，反而是积累了不少养小孩的心得。
+当知道了有这么次会议可以分享这半年来的心得的时候，我毫不犹豫地选定了主题。那就是&lt;/p&gt;
+
+&lt;blockquote&gt;
+&lt;p&gt;如何打造一个让人愉快的&lt;strong&gt;小孩&lt;/strong&gt;  &lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;但考虑到这是一次开发者会议...当我把这个想法和题目提交给大会的时候，被残酷地拒绝了。考虑到我们是一次开发者大会，所以我需要找一些更合适的主题。其实如果你对自己的代码有感情的话，我们开发和维护的项目或者框架就如同自己的孩子一般这也是我所能找到的两者的共同点。所以，我将原来拟定的主题换了两个字：&lt;/p&gt;
+
+&lt;blockquote&gt;
+&lt;p&gt;如何打造一个让人愉快的&lt;strong&gt;框架&lt;/strong&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;在正式开始前，我想先给大家分享一个故事。我们那儿的 iOS 开发小组里有一个叫做武田君的人，他的代码写得不错，做事也非常严谨，可以说是楷模般的员工。但是他有一个致命的弱点 -- 喜欢自己发明轮子。他出于本能地抗拒在代码中使用第三方框架，所以接到开发任务以后他一般都要花比其他小伙伴更多的时间才能完成。&lt;/p&gt;
+
+&lt;p&gt;武田君其实在各个方面都有建树...比如&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;网络请求&lt;/li&gt;
+&lt;li&gt;模型解析&lt;/li&gt;
+&lt;li&gt;导航效果&lt;/li&gt;
+&lt;li&gt;视图动画
+...&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;不过虽然造了很多轮子，但是代码的重用比较糟糕，耦合严重。在新项目中使用的话，只能复制粘贴，然后针对项目修修补补。因为承担的任务总是没有办法完成，他一直是项目deadline的决定者，在日本这种社会，压力可想而知。就在我这次回国之前，武田君来向我借了一本我本科时候最喜欢的书。就是这本：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2016/book-cover.jpg&quot; alt=&quot;&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;我有时候就想，到底是什么让一个开发者面临如此大的精神压力，我们有什么办法来缓解这种压力。在我们有限的开发生涯中，应该如何有效利用时间来做一些更有价值的事情。&lt;/p&gt;
+
+&lt;p&gt;显然，我们不可能一天建成罗马，也不可能一个人建成罗马。我们需要一些方法把自己和别人写的代码组织起来，高效地利用，并以此为基础构建软件。这就涉及到使用和维护框架。如何利用框架迅速构建应用，以及在开发和发布一个框架的时候应该注意一些什么，这是我今天想讲的主题。当然，为了让大家安心和专注于今天的内容，而不是挂念武田君的命运，特此声明：&lt;/p&gt;
+
+&lt;blockquote&gt;
+&lt;p&gt;以上故事纯属虚构，如有雷同实属巧合&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;h2&gt;使用框架&lt;/h2&gt;
+
+&lt;p&gt;在了解如何制作框架之前，先让我们看看如何使用框架。可以说，如果你想成为一个框架的提供者，首先你必须是一个优秀的使用者。&lt;/p&gt;
+
+&lt;p&gt;在 iOS 开发的早期，使用框架其实并不是一件让人愉悦的事情。可能有几年经验的开发者都有这样的体会，那就是：&lt;/p&gt;
+
+&lt;blockquote&gt;
+&lt;p&gt;忘不了 那些年，被手动引用和 &lt;code&gt;.a&lt;/code&gt; 文件所支配的恐惧&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;其实恐惧源于未知，回想一下，当我们刚接触软件开发的时候，懵懵懂懂地引用了一个静态库，然后面对一排排编译器报错时候手足无措的绝望。但是当我们了解了静态库的话，我们就能克服这种恐惧了。&lt;/p&gt;
+
+&lt;h3&gt;什么是静态库 (Static Library)&lt;/h3&gt;
+
+&lt;p&gt;所谓静态库，或者说 .a 文件，就是一系列从源码编译的目标文件的集合。它是你的源码的实现所对应的二进制。配合上公共的 .h 文件，我们可以获取到 .a 中暴露的方法或者成员等。在最后编译 app 的时候.a 将被链接到最终的可执行文件中，之后每次都随着app的可执行二进制文件一同加载，你不能控制加载的方式和时机，所以称为静态库。&lt;/p&gt;
+
+&lt;p&gt;在 iOS 8 之前，iOS 只支持以静态库的方式来使用第三方的代码。&lt;/p&gt;
+
+&lt;h3&gt;什么是动态框架 (Dynamic Framework)&lt;/h3&gt;
+
+&lt;p&gt;与静态相对应的当然是动态。我们每天使用的 iOS 系统的框架是以 .framework 结尾的，它们就是动态框架。&lt;/p&gt;
+
+&lt;p&gt;Framework 其实是一个 bundle，或者说是一个特殊的文件夹。系统的 framework 是存在于系统内部，而不会打包进 app 中。app 的启动的时候会检查所需要的动态框架是否已经加载。像 UIKit 之类的常用系统框架一般已经在内存中，就不需要再次加载，这可以保证 app 启动速度。相比静态库，framework 是自包含的，你不需要关心头文件位置等，使用起来很方便。&lt;/p&gt;
+
+&lt;h3&gt;Universal Framework&lt;/h3&gt;
+
+&lt;p&gt;iOS 8 之前也有一些第三方库提供 .framework 文件，但是它们实质上都是静态库，只不过通过一些方法进行了包装，相比传统的 .a 要好用一些。像是原来的 Dropbox 和 Facebook 等都使用这种方法来提供 SDK。不过因为已经脱离时代，所以在此略过不说。有兴趣和需要的朋友可以参看一下&lt;a href=&quot;https://github.com/kstenerud/iOS-Universal-Framework&quot;&gt;这里&lt;/a&gt;和&lt;a href=&quot;https://github.com/jverkoey/iOS-Framework&quot;&gt;这里&lt;/a&gt;。&lt;/p&gt;
+
+&lt;h3&gt;Library v.s. Framework&lt;/h3&gt;
+
+&lt;p&gt;对比静态库和动态框架，后者是有不少优势的。&lt;/p&gt;
+
+&lt;p&gt;首先，静态库不能包含像 xib 文件，图片这样的资源文件，其他开发者必须将它们复制到 app 的 main bundle 中才能使用，维护和更新非常困难；而 framework 则可以将资源文件包含在自己的 bundle 中。
+其次，静态库必须打包到二进制文件中，这在以前的 iOS 开发中不是很大的问题。但是随着 iOS 扩展（比如通知中心扩展或者 Action 扩展）开发的出现，你现在可能需要将同一个 .a 包含在 app 本体以及扩展的二进制文件中，这是不必要的重复。&lt;/p&gt;
+
+&lt;p&gt;最后，静态库只能随应用 binary 一起加载，而动态框架加载到内存后就不需要再次加载，二次启动速度加快。另外，使用时也可以控制加载时机。&lt;/p&gt;
+
+&lt;p&gt;动态框架有非常多的优点，但是遗憾的是以前 Apple 不允许第三方框架使用动态方式，而只有系统框架可以通过动态方式加载。&lt;/p&gt;
+
+&lt;p&gt;很多时候我们都想问，Apple，凭什么？&lt;/p&gt;
+
+&lt;p&gt;好吧，这种事也不是一次两次了...不过好消息是：。&lt;/p&gt;
+
+&lt;h3&gt;Cocoa Touch Framework&lt;/h3&gt;
+
+&lt;p&gt;Apple 从 iOS 8 开始允许开发者有条件地创建和使用动态框架，这种框架叫做 Cocoa Touch Framework。&lt;/p&gt;
+
+&lt;p&gt;虽然同样是动态框架，但是和系统 framework 不同，app 中的使用的 Cocoa Touch Framework 在打包和提交 app 时会被放到 app bundle 中，运行在沙盒里，而不是系统中。也就是说，不同的 app 就算使用了同样的 framework，但还是会有多份的框架被分别签名，打包和加载。&lt;/p&gt;
+
+&lt;p&gt;Cocoa Touch Framework 的推出主要是为了解决两个问题：首先是应对刚才提到的从 iOS 8 开始的扩展开发。其次是因为 Swift，在 Swift 开源之前，它是不支持编译为静态库的。虽然在开源后有编译为静态库的可能性，但是因为 Binary Interface 未确定，现在也还无法实用。这些问题会在 Swift 3 中将被解决，但这至少要等到今年下半年了。&lt;/p&gt;
+
+&lt;p&gt;现在，Swift runtime 不在系统中，而是打包在各个 app 里的。所以如果要使用 Swift 静态框架，由于 ABI 不兼容，所以我们将不得不在静态包中再包含一次 runtime，可能导致同一个 app 包中包括多个版本的运行时，暂时是不可取的。&lt;/p&gt;
+
+&lt;h3&gt;包和依赖管理&lt;/h3&gt;
+
+&lt;p&gt;在使用框架的时候，用一些包管理和依赖管理工具可以简化使用流程。其中现在使用最广泛的应该是 [CocoaPods](&lt;a href=&quot;http://cocoapods.org%5D(http://cocoapods.org)%E3%80%82&quot;&gt;http://cocoapods.org](http://cocoapods.org)。&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;CocoaPods 是一个已经有五年历史的 ruby 程序，可以帮助获取和管理依赖框架。&lt;/p&gt;
+
+&lt;p&gt;CocoaPods 的主要原理是框架的提供者通过编写合适的 PodSpec 文件来提供框架的基本信息，包括仓库地址，需要编译的文件，依赖等
+用户使用 Podfile 文件指定想要使用的框架，CocoaPods 会创建一个新的工程来管理这些框架和它们的依赖，并把所有这些框架编译到成一个静态的 libPod.a。然后新建一个 workspace 包含你原来的项目和这个新的框架项目，最后在原来的项目中使用这个 libPods.a&lt;/p&gt;
+
+&lt;p&gt;这是一种“侵入式”的集成方式，它会修改你的项目配置和结构。&lt;/p&gt;
+
+&lt;p&gt;本来 CocoaPods 已经准备在前年发布 1.0 版本，但是 Swift 和动态框架的横空出世打乱了这个计划。因为必须提供对这两者的支持。不过最近 1.0.0 的 beta 已经公布，相信这个历时五年的项目将在最近很快迎来正式发布。&lt;/p&gt;
+
+&lt;p&gt;从 0.36.0 开始，可以通过在 Podfile 中添加 &lt;code&gt;use_frameworks!&lt;/code&gt; 来编译 CocoaTouch Framework，也就是动态框架。&lt;/p&gt;
+
+&lt;p&gt;因为现在 Swift 的代码只能被编译为动态框架，所以如果你使用的依赖中包含 Swift 代码，又想使用 CocoaPods 来管理的话，必须选择开启这个选项。&lt;/p&gt;
+
+&lt;p&gt;&lt;code&gt;use_frameworks!&lt;/code&gt; 会把项目的依赖全部改为 framework。也就是说这是一个 none or all 的更改。你无法指定某几个框架编译为动态，某几个编译为静态。我们可以这么理解：假设 Pod A 是动态框架，Pod B 是静态，Pod A 依赖 Pod B。要是 app 也依赖 Pod B：那么要么 Pod A 在 link 的时候找不到 Pod B 的符号，要么 A 和 app 都包含 B，都是无解的情况。&lt;/p&gt;
+
+&lt;p&gt;使用 CocoaPods 很简单，用 Podfile 来描述你需要使用和依赖哪些框架，然后执行 pod install 就可以了。下面是一个典型的 Podfile 的结构。&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-ruby&quot; data-lang=&quot;ruby&quot;&gt;# Podfile
+platform :ios, &amp;#39;8.0&amp;#39;
+use_frameworks!
+
+target &amp;#39;MyApp&amp;#39; do
+  pod &amp;#39;AFNetworking&amp;#39;, &amp;#39;~&amp;gt; 2.6&amp;#39;
+  pod &amp;#39;ORStackView&amp;#39;, &amp;#39;~&amp;gt; 3.0&amp;#39;
+  pod &amp;#39;SwiftyJSON&amp;#39;, &amp;#39;~&amp;gt; 2.3&amp;#39;
+end
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;$ pod install
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;&lt;a href=&quot;https://github.com/Carthage/Carthage&quot;&gt;Carthage&lt;/a&gt; 是另外的一个选择，它是在 Cocoa Touch Framework 和 Swift 发布后出现的专门针对 Framework 进行的包管理工具。&lt;/p&gt;
+
+&lt;p&gt;Carthage 相比 CocoaPods，采用的是完全不同的一条道路。Carthage 只支持动态框架，它仅负责将项目 clone 到本地并将对应的 Cocoa Framework target 进行构建。之后你需要自行将构建好的 framework 添加到项目中。和 CocoaPods 需要提交和维护框架信息不同，Carthage 是去中心化的
+它直接从 git 仓库获取项目，而不需要依靠 podspec 类似的文件来管理。&lt;/p&gt;
+
+&lt;p&gt;使用上来说，Carthage 和 CocoaPods 类似之处在于也通过一个文件 &lt;code&gt;Cartfile&lt;/code&gt; 来指定依赖关系。&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-ruby&quot; data-lang=&quot;ruby&quot;&gt;# Cartfile
+github &amp;quot;ReactiveCocoa/ReactiveCocoa&amp;quot;
+github &amp;quot;onevcat/Kingfisher&amp;quot; ~&amp;gt; 1.8
+github &amp;quot;https://enterprise.local/hello/repo.git&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;$ carthage update
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;在使用 Framework 的时候，我们需要将用到的框架 Embedded Binary 的方式链接到希望的 App target 中。&lt;/p&gt;
+
+&lt;p&gt;随着上个月 Swift 开源，有了新的可能的选项，那就是 &lt;a href=&quot;https://swift.org/package-manager/&quot;&gt;Swift Package Manager&lt;/a&gt;。这可能是未来的包管理方式，但是现在暂时不支持 iOS 和 tvOS （也就是说 UIKit 并不支持）。&lt;/p&gt;
+
+&lt;p&gt;Package Manager 实际上做的事情和 Carthage 相似，不过是通过 &lt;code&gt;llbuild&lt;/code&gt; （low level build system）的跨平台编译工具将 Swift 编译为 .a 静态库。&lt;/p&gt;
+
+&lt;p&gt;这个项目很新，从去年 11 月才开始。不过因为是 Apple 官方支持，所以今后很可能会集成到 Xcode 工具链中，成为项目的标配，非常值得期待。但是现在暂时还无法用于应用开发。&lt;/p&gt;
+
+&lt;h2&gt;创建框架&lt;/h2&gt;
+
+&lt;p&gt;作为框架的用户你可能知道这些就能够很好地使用各个框架了。但是如果你想要创建一个框架的话，还远远不够。接下来我们说一说如何创建一个框架。&lt;/p&gt;
+
+&lt;p&gt;Xcode 为我们准备了 framework target 的模板，直接创建这个 target，就可以开始编写框架了。&lt;/p&gt;
+
+&lt;p&gt;添加源文件，编写代码，编译，完成，就是这么简单。&lt;/p&gt;
+
+&lt;p&gt;app 开发所得到产品直接面向最终用户；而框架开发得到的是一个中间产品，它面向的是其他开发者。对于一款 app，我们更注重使用各种手段来保证用户体验，最终目的是解决用户使用的问题。而框架的侧重点与 app 稍有不同，像是集成上的便利程度，使用上是否方便，升级的兼容等都需要考虑。虽然框架的开发和 app 的开发有不少不同，但是也有不少共通的规则和需要遵循的思维方式。&lt;/p&gt;
+
+&lt;h3&gt;API 设计&lt;/h3&gt;
+
+&lt;h4&gt;最小化原则&lt;/h4&gt;
+
+&lt;p&gt;基于框架开发的特点，相较于 app 开发，需要更着重地考虑 API 的设计。你标记为 public 的内容将是框架使用者能看到的内容。提供什么样的 API 在很大程度上决定了其他的开发者会如何使用你的框架。&lt;/p&gt;
+
+&lt;p&gt;在 API 设计的时候，从原则上来说，我们一开始可以提供尽可能少的接口来完成必要的任务，这有助于在框架初期控制框架的复杂程度。
+之后随着逐步的开发和框架使用场景的扩展，我们可以添加公共接口或者将原来的 internal 或者 private 接口标记为 public 供外界使用。&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;// Do this
+public func mustMethod() { ... }
+func onlyUsedInFramework() { ... }
+private func onlyUsedInFile() { ... }
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;// Don&amp;#39;t do this
+public func mustMethod() { ... }
+public func onlyUsedInFramework() { ... }
+public func onlyUsedInFile() { ... }
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;h4&gt;命名考虑&lt;/h4&gt;
+
+&lt;p&gt;在决定了 public 接口以后，我们很快就会迎来编程界的最难的问题之一，命名。&lt;/p&gt;
+
+&lt;p&gt;在 Objective-C 时代 Cocoa 开发的类型或者方法名称就以一个长字著称，Swift 时代保留了这个光荣传统。Swift 程序的命名应该尽量表意清晰，不用奇怪的缩写。在 Cocoa 的世界里，精确比简短更有吸引力。&lt;/p&gt;
+
+&lt;p&gt;几个例子，相比于简单的 &lt;code&gt;remove&lt;/code&gt;，&lt;code&gt;removeAt&lt;/code&gt; 更能表达出从一个集合类型中移除元素的方式。而 &lt;code&gt;remove&lt;/code&gt; 可能导致误解，是移除特定的 int 还是从某个 index 移除？&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;// Do this
+public mutating func removeAt(position: Index) -&amp;gt; Element
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;// Don&amp;#39;t do this
+public mutating func remove(i: Int) -&amp;gt; Element            
+// &amp;lt;- index or element?
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;同样，&lt;code&gt;recursivelyFetch&lt;/code&gt; 表达了递归地获取，而 &lt;code&gt;fetch&lt;/code&gt; 很可能被理解为仅获取当前输入。&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;// Do this
+public func recursivelyFetch(urls: [(String, Range&amp;lt;Version&amp;gt;)]) throws -&amp;gt; [T]
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;// Don&amp;#39;t do this
+public func fetch(urls: [(String, Range&amp;lt;Version&amp;gt;)]) throws -&amp;gt; [T] // &amp;lt;- how?
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;另外需要注意方法名应该是动词或者动词短语开头，而属性名应该是名词。当遇到冲突时，（比如这里的 displayName，既可以是名字也可以是动词）应该特别注意属性和方法的上下文造成的理解不同。更好的方式是避免名动皆可的词语，比如把 displayName 换为 screenName，就不会产生歧义了。&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;public var displayName: String
+public var screenName: String // &amp;lt;- Better
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;// Don&amp;#39;t do this
+public func displayName() -&amp;gt; String 
+// &amp;lt;- noun or verb? Why returning `String`?
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;在命名 API 时一个有用的诀窍是为你的 API 写文档。如果你用一句话无法将一个方法的内容表述清楚的话，这往往就意味着 API 的名字有改进的余地。好的 API 设计可以让有经验的开发者猜得八九不离十，看文档更多地只是为了确认细节。一个 API 如果能做到不需要看文档就能被使用，那么它肯定是成功的。&lt;/p&gt;
+
+&lt;p&gt;关于 API 的命名，Apple 官方给出了一个很详细的&lt;a href=&quot;https://swift.org/documentation/api-design-guidelines/&quot;&gt;指南&lt;/a&gt; (Swift API Design Guidelines)，相信每个开发者的必读内容。遵守这个准则，和其他开发者一道，用约定俗称的方式来进行编程和交流，这对提高框架质量非常，非常，非常重要（重要的事情要说三遍，如果你在我的演讲中只能记住一页的话，我希望是这一页。如果你还没有看过这个指南，建议去看一看，只需要花十分钟时间。）&lt;/p&gt;
+
+&lt;h4&gt;优先测试，测试驱动开发&lt;/h4&gt;
+
+&lt;p&gt;你应该是你自己写的框架的第一个用户，最简单的使用你自己的框架的方式就是编写测试。据我所知，在 app 开发中，很多时候单元测试被忽视了。但是在框架开发中，这是很重要的一个环节。可能没有人会敢使用没有测试的框架。除了保证功能正确以外，通过测试，你可以发现框架中设计不合理的地方，并在第一时间进行改善。&lt;/p&gt;
+
+&lt;p&gt;为框架编写测试的方式和为 app 测试类似，
+Swift 2 开始可以使用 @testable 来把框架引入到测试 module。这样的话可以调用 internal 方法。&lt;/p&gt;
+
+&lt;p&gt;不过对于框架来说，理论上只测试 public 就够了。但是我个人推荐使用 testable，来对一些重要的 internal 的方法也进行测试。这可以提高开发和交付时的信心。&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;// In Test Target
+import XCTest
+@testable import YourFramework
+class FrameworkTypeTests: XCTestCase {
+   // ...
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;hr&gt;
+
+&lt;h3&gt;开发时的选择&lt;/h3&gt;
+
+&lt;h4&gt;命名冲突&lt;/h4&gt;
+
+&lt;p&gt;在 Objective-C 中的 static library 里一个常见问题是同样的符号在链接时会导致冲突。&lt;/p&gt;
+
+&lt;p&gt;Swift 中我们可以通过 module 来提供类似命名空间隔离，从而避免符号冲突。但是在对系统已有的类添加 extension 的时候还是需要特别注意命名的问题。&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;   // F1.framework
+   extension UIImage {
+       public method() { print(&amp;quot;F1&amp;quot;) }
+   }
+
+   // F2.framework
+   extension UIImage {
+       public method() { print(&amp;quot;F2&amp;quot;) }
+   }
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;比如在框架 F1 和 F2 中我们都对 UIImage 定义了 method 方法，分别就输出自己来自哪个框架。&lt;/p&gt;
+
+&lt;p&gt;如果我们需要在同一个文件里的话引入的话：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;// app
+import F1
+import F2
+UIImage().method()
+// Ambiguous use of &amp;#39;method()&amp;#39;
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;在 app 中的一个文件里同时 import F1 和 F2，就会产生编译错误，因为 F1 和 F2 都为同一个类型 UIImage 定义了 method，编译器无法确定使用哪个方法。&lt;/p&gt;
+
+&lt;p&gt;当然因为有 import 控制，在使用的时候注意一下源文件的划分，避免同时 import F1 和 F2，似乎就能解决这个问题。&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;// app
+import F1
+UIImage().method()
+// 输出 F2 （结果不确定）
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;确实，只 import F1 的话，编译错误没有了，但是运行的时候有可能看到虽然 import 的是 F1，但是实际上调用到的是 F2 中的方法。&lt;/p&gt;
+
+&lt;p&gt;这是因为虽然有命名空间隔离，但 NSObject 的 extension 实际上还是依赖于 Objective-C runtime 的，这两个框架都在 app 启动时候被加载，运行时究竟调用了哪个方法是和加载顺序相关的，并不确定。&lt;/p&gt;
+
+&lt;p&gt;这种问题可以实际遇到的话，会非常难调试。&lt;/p&gt;
+
+&lt;p&gt;所以我们开发框架时的选择，对于已存在类型的 &lt;code&gt;extension&lt;/code&gt;，&lt;strong&gt;必须添加前缀&lt;/strong&gt;，
+这和以前我们写 Objective-C 的 Category 的时候的原则是一样的。&lt;/p&gt;
+
+&lt;p&gt;上面的例子里，在开发的时候，不应该写这样的代码，而应该加上合适的前缀，以减少冲突的可能性。&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;// Do this
+// F1.framework
+extension UIImage {
+  public f1_method() { print(&amp;quot;F1&amp;quot;) }
+}
+
+// F2.framework
+extension UIImage {
+  public f2_method() { print(&amp;quot;F2&amp;quot;) }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;h4&gt;资源 bundle&lt;/h4&gt;
+
+&lt;p&gt;刚才提到过，framework 的一大优势是可以在自己的 bundle 中包含资源文件。在使用时，不需要关心框架的用户的环境，直接访问自己的类型的 bundle 就可以获取框架内的资源。&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;let bundle =
+    NSBundle(forClass: ClassInFramework.self)
+let path =
+    bundle.pathForResource(&amp;quot;resource&amp;quot;, ofType: &amp;quot;png&amp;quot;)
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;h2&gt;发布框架&lt;/h2&gt;
+
+&lt;p&gt;最后说说发布和维护一个框架。辛苦制作的框架的最终目的其实就是让别人使用，一个没有人用的框架可以说是没有价值的。&lt;/p&gt;
+
+&lt;p&gt;如果你想让更多的人知道你的框架，那抛开各种爱国感情和个人喜好，可以说 iOS 或者 Swift 开发者的发布目的地只有一个，那就是 GitHub。&lt;/p&gt;
+
+&lt;p&gt;当然在像是开源中国或者 CSDN 这样的代码托管服务上发布也是很好的选择，但是不可否认的现状是只有在 GitHub 上你才能很方便地和全世界其他地方的开发者分享和交流你的代码。&lt;/p&gt;
+
+&lt;h3&gt;选择依赖工具&lt;/h3&gt;
+
+&lt;p&gt;关于发布，另外一个重要的问题，一般你需要选择支持一个或多个依赖管理工具。&lt;/p&gt;
+
+&lt;h4&gt;CocoaPods&lt;/h4&gt;
+
+&lt;p&gt;刚才也提到，CocoaPods 用 podspec 文件来描述项目信息，使用 CocoaPods 提供的命令行工具
+可以创建一个 podspec 模板，我们要做的就是按照项目的情况编辑这个文件。
+比如这里列出了一个podspec的基本结构，可以看到包含了很多项目信息。关于更详细的用法，可以参看 CocoaPods 的&lt;a href=&quot;https://guides.cocoapods.org/making/getting-setup-with-trunk.html&quot;&gt;文档&lt;/a&gt;。&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;pod spec create MyFramework
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;Pod::Spec.new do |s|
+  s.name         = &amp;quot;MyFramework&amp;quot;
+  s.version      = &amp;quot;1.0.2&amp;quot;
+  s.summary      = &amp;quot;My first framework&amp;quot;
+  s.description  = &amp;lt;&amp;lt;-DESC
+                    It&amp;#39;s my first framework.
+                   DESC
+  s.ios.deployment_target = &amp;quot;8.0&amp;quot;
+  s.source       = { :git =&amp;gt; &amp;quot;https://github.com/onevcat/myframework.git&amp;quot;, 
+                     :tag =&amp;gt; s.version }
+
+  s.source_files  = &amp;quot;Class/*.{h,swift}&amp;quot;
+  s.public_header_files = [&amp;quot;MyFramework/MyFramework.h&amp;quot;]
+end
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;提交到 CocoaPods 也很简单，使用它们的命令行工具来检查 podspec 语法和项目是否正常编译，最后推送 podspec 到 CocoaPods 的主仓库就可以了。&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;# 打 tag
+git tag 1.0.2 &amp;amp;&amp;amp; git push origin --tags
+
+# podspec 文法检查
+pod spec lint MyFramework.podspec
+
+# 提交到 CocoaPods 中心仓库
+pod trunk push MyFramework.podspec
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;h4&gt;Carthage&lt;/h4&gt;
+
+&lt;p&gt;另一个应该考虑尽量支持的是 Carthage，因为它的用户数量也不可小觑。
+支持 Carthage 比 CocoaPods 要简单很多，你需要做的只是保证你的框架 target 能正确编译，然后在 Manage Scheme 里把这个 target 标记为 Shared 就行了。&lt;/p&gt;
+
+&lt;h4&gt;Swift Package Manager&lt;/h4&gt;
+
+&lt;p&gt;Swift Package Manager 暂时还不能用于 iOS 项目的依赖管理，但是对于那些并不依赖 iOS 平台的框架来说，现在就可以开始支持 Swift Package Manager 了。&lt;/p&gt;
+
+&lt;p&gt;Swift Package Manager 按照文件夹组织来确定模块，你需要把你的代码放到项目根目录下的 Sources 文件夹里。&lt;/p&gt;
+
+&lt;p&gt;然后在根目录下创建 Package.swift 文件来定义 package 信息。这就是一个普通的 swift 源码文件，你需要做的是在里面定义一个 package 成员，为它指定名字和依赖关系等等。Package Manager 命令将根据这个文件和文件夹的层次来构建你的框架。&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;// Package.swift
+import PackageDescription  
+let package = Package(
+    name: &amp;quot;MyKit&amp;quot;,
+    dependencies: [
+        .Package(url: &amp;quot;https://github.com/onevcat/anotherPacakge.git&amp;quot;,
+                 majorVersion: 1)
+    ]
+)
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;h3&gt;版本管理&lt;/h3&gt;
+
+&lt;p&gt;在发布时另外一个需要特别注意的是版本。在 Podfile 或者 Cartfile 中指定依赖版本的时候我们可以看到类似这样的小飘箭头的符号，这代表版本兼容。比如兼容 2.6.1 表示高于 2.6.1 的 2.6.x 版本都可以使用，而 2.7 或以上不行；同理，如果兼容 2.6 的话，2.6，2.7，2.8 等等这些版本都是兼容的，而 3.0 不行。当然也可以使用 &amp;gt;= 或者是 = 这些符号。&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-ruby&quot; data-lang=&quot;ruby&quot;&gt;# Podfile
+pod &amp;#39;AFNetworking&amp;#39;, &amp;#39;~&amp;gt; 2.6.1&amp;#39;
+# 2.6.x 兼容 (2.6.1, 2.6.2, 2.6.9 等，不包含 2.7)
+
+# Podfile
+pod &amp;#39;AFNetworking&amp;#39;, &amp;#39;~&amp;gt; 2.6&amp;#39;
+# 2.x 兼容 (2.6.1, 2.7, 2.8 等，不包含 3.0)
+
+# Cartfile
+github &amp;quot;Mantle/Mantle&amp;quot; &amp;gt;= 1.1
+# 大于等于 1.1 (1.1，1.1.4, 1.3, 2.1 等)
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;h4&gt;Semantic Versioning 和版本兼容&lt;/h4&gt;
+
+&lt;p&gt;那什么叫版本兼容呢？我们看到的这套版本管理的方法叫做 &lt;a href=&quot;http://semver.org&quot;&gt;Semantic Versioning&lt;/a&gt;。它一般通过三个数字来定义版本。&lt;/p&gt;
+
+&lt;blockquote&gt;
+&lt;p&gt;&lt;code&gt;x(major).y(minor).z(patch)&lt;/code&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;ul&gt;
+&lt;li&gt;major - 公共 API 改动或者删减&lt;/li&gt;
+&lt;li&gt;minor - 新添加了公共 API&lt;/li&gt;
+&lt;li&gt;patch - bug 修正等&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;0.x.y&lt;/code&gt; 只遵守最后一条&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;major 的更改表示用户必须修改自己的代码才能继续使用框架；minor 表示框架添加了新的 API，但是现有用户不需要修改代码可以保持原有行为不变；而 patch 则代表 API 没有改变，仅只是内部修正。&lt;/p&gt;
+
+&lt;p&gt;在这个约定下，同样的 major 版本号就意味着用户不需要修改现有代码就能继续使用这个框架，所以这是使用最广的一个依赖方式，在这个兼容保证下，用户可以自由升级 minor 版本号。&lt;/p&gt;
+
+&lt;p&gt;但是有一个例外，那就是还没有正式到达 1.0.0 版本号的框架。
+这种框架代表还在早期开发，没有正式发布，API 还在调整中，开发者只需要遵守 patch 的规则，也就是说 0.1.1 和 0.1.2 只有小的修正。但是 0.2 和 0.1 是可以完全不兼容。如果你正在使用一个未正式发布的框架的时候，需要小心这一点。&lt;/p&gt;
+
+&lt;p&gt;框架的版本应该和 git 的 tag 对应，这可以和大多数版本管理工具兼容
+一般来说用户会默认你的框架时遵循 Semantic Versioning 和兼容规则。&lt;/p&gt;
+
+&lt;p&gt;我们在设置版本的时候可能会注意到 Info.plist 中的 Version 和 Build 这两个值。虽然 CocoaPods 或者 Carthage 这样的包管理系统并不是使用 Info.plist 里的内容来确定依赖关系，但是我们最好还是保持这里的版本号和 git tag 的一致性。&lt;/p&gt;
+
+&lt;p&gt;当我们编译框架项目的时候，会在头文件或者 module map 里看到这样的定义。
+框架的用户想要在运行时知道所使用的框架的版本号的话，使用这些属性会十分方便。这在做框架版本迁移的时候可能会有用。所以作为开发者，也应该维护这两个值来帮助我们确定框架版本。&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-c&quot; data-lang=&quot;c&quot;&gt;// MyFramework.h
+//! Project version string for MyFramework.
+FOUNDATION_EXPORT const unsigned char MyFrameworkVersionString[]; // 1.8.3
+//! Project version number for MyFramework.
+FOUNDATION_EXPORT double MyFrameworkVersionNumber; // 347
+
+// Exported module map
+//! Project version number for MyFramework.
+public var MyFrameworkVersionNumber: Double
+// 并没有导出 MyFrameworkVersionString
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;h3&gt;持续集成&lt;/h3&gt;
+
+&lt;p&gt;在框架开发中，一个优秀的持续集成环境是至关重要的。CI 可以保证潜在的贡献者在有保障的情况下对代码进行修改，减小了框架的维护压力。大部分 CI 环境对于开源项目都是免费的，得益于此，我们可以利用这个星球上最优秀的 CI 来确保我们的代码正常工作。&lt;/p&gt;
+
+&lt;p&gt;就 iOS 或者 OSX 开发来说，Travis CI, CircleCI, Coveralls，Codecov 等都是很好的选择。&lt;/p&gt;
+
+&lt;p&gt;开发总是有趣的，但是发布一般都很无聊。因为发布流程每次都一样，非常机械。无非就是跑测试，打 tag，上传代码，写 release log，更新 podspec 等等。虽然简单，但是费时费力，容易出错。对于这种情景，自动化流程显然是最好的选择。而相比于自己写发布脚本，在 Cocoa 社区我们有更好的工具，那就是 &lt;a href=&quot;https://fastlane.tools&quot;&gt;fastlane&lt;/a&gt;。&lt;/p&gt;
+
+&lt;p&gt;fastlane 是一系列 Cocoa 开发的工具的集合，包括跑测试，打包 app，自动截图，管理 iTunes Connect 等等。&lt;/p&gt;
+
+&lt;p&gt;不单单是 app 开发，在框架开发中，我们也可以利用到 fastlane 里很多很方便的命令。&lt;/p&gt;
+
+&lt;p&gt;使用 fastlane 做持续发布很简单，建立自己的合适的 Fastfile 文件，然后把你想做什么写进去就好了。比如这里是一个简单的 Fastfile 的例子：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-ruby&quot; data-lang=&quot;ruby&quot;&gt;# Fastfile
+desc &amp;quot;Release new version&amp;quot;
+lane :release do |options|
+  target_version = options[:version]
+  raise &amp;quot;The version is missed.&amp;quot; if target_version.nil?
+  ensure_git_branch                                             # 确认 master 分支
+  ensure_git_status_clean                                       # 确认没有未提交的文件
+  scan                                                          # 运行测试
+
+  sync_build_number_to_git                                      # 将 build 号设为 git commit 数
+  increment_version_number(version_number: target_version)      # 设置版本号
+
+  version_bump_podspec(path: &amp;quot;Kingfisher.podspec&amp;quot;,
+             version_number: target_version)                    # 更新 podspec
+  git_commit_all(message: &amp;quot;Bump version to #{target_version}&amp;quot;)  # 提交版本号修改
+  add_git_tag tag: target_version                               # 设置 tag
+  push_to_git_remote                                            # 推送到 git 仓库
+  pod_push                                                      # 提交到 CocoaPods
+end
+
+$ fastlane release version:1.8.4
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;AFNetworking 在 3.0 版本开始加入了 fastlane 做自动集成和发布，可以说把开源项目的 CI 做到了极致。在这里强烈推荐大家有空可以看一看&lt;a href=&quot;https://github.com/AFNetworking/fastlane&quot;&gt;这个项目&lt;/a&gt;，除了使用 fastlane 简化流程以外，这个项目里还介绍了一些发布框架时的最佳实践。&lt;/p&gt;
+
+&lt;p&gt;我们能不能创造出像 AFNetworking 这样优秀的框架呢？一个优秀的框架包含哪些要求？&lt;/p&gt;
+
+&lt;h3&gt;创建一个优秀的框架&lt;/h3&gt;
+
+&lt;p&gt;一个优秀的框架必定包含这些特性：详尽的文档说明，可以指导后来开发者或者协作者迅速上手的注释，&lt;/p&gt;
+
+&lt;p&gt;完善的测试保证功能正确以及不发生退化，简短易读可维护的代码，可以让使用者了解版本变化的更新日志，对于issue的解答等等。&lt;/p&gt;
+
+&lt;p&gt;我们知道在科技界或者说 IT 界会有很多喜欢跑分的朋友。其实跑分这个事情可以辩证来看，它有其有意义的一面。跑分高的不一定优秀，但是优秀的跑分一般一定都会高。&lt;/p&gt;
+
+&lt;p&gt;不止在硬件类的产品，其实在框架开发中我们其实也可以做类似的跑分来检验我们的框架质量如何。&lt;/p&gt;
+
+&lt;p&gt;那就是 &lt;a href=&quot;https://cocoapods.org/pods/Kingfisher/quality&quot;&gt;CocoaPods Quality&lt;/a&gt;，它是一个给开源框架打分的索引类的项目，会按照项目的受欢迎程度和完整度，并基于我们上面说的这些标准来对项目质量进行评判。&lt;/p&gt;
+
+&lt;p&gt;对于框架使用者来说，这可以成为一个选择框架时的&lt;a href=&quot;https://guides.cocoapods.org/making/quality-indexes&quot;&gt;重要参考&lt;/a&gt;，分数越高基本可以确定可能遇到的坑会越少。&lt;/p&gt;
+
+&lt;p&gt;而对于框架的开发者来说，努力提高这个分数的同时，代码和框架质量肯定也得到了提高，这是一个自我完善的良好途径。在遇到功能类似的框架，我们也可以说“不服？跑个分”&lt;/p&gt;
+
+&lt;h3&gt;可能的问题&lt;/h3&gt;
+
+&lt;p&gt;最后想和大家探讨一下在框架开发中几个比较常见和需要特别注意的问题。&lt;/p&gt;
+
+&lt;p&gt;首先是兼容性的保证这里的兼容性不是 API 的兼容性，而是逻辑上的兼容性。
+最可能出现问题的地方就是在不同版本中对数据持久化部分的处理是否兼容，
+包括数据库和Key-archiving。比如在新版本中添加了一个属性，如何从老版本中进行迁移如果处理不当，很可能就造成严重错误甚至 crash。&lt;/p&gt;
+
+&lt;p&gt;另一个问题是重复的依赖。Swift 运行时还没有包含在设备中，如果对于框架，将 &lt;code&gt;EMBEDDED_CONTENT_CONTAINS_SWIFT&lt;/code&gt; 设为 &lt;code&gt;YES&lt;/code&gt; 的话，Swift 运行库将会被复制到框架中，这不是我们想见到的。在框架开发中这个 flag 一定是 NO，我们应该在 app 的 target 中进行设置。另外，可能你的框架会依赖其他框架，不要在项目中通过 copy file 把依赖的框架 copy 到框架 target 中，而是应该通过 Podfile 和 Cartfile 来解决依赖问题。&lt;/p&gt;
+
+&lt;p&gt;在决定框架依赖的时候，可能遇到的最大的问题就是不同框架的依赖可能&lt;a href=&quot;https://github.com/apple/swift-package-manager/blob/master/Documentation/DependencyHells.md&quot;&gt;无法兼容&lt;/a&gt;。&lt;/p&gt;
+
+&lt;p&gt;比如说一个 app 同时依赖了框架 A 和框架 B，而这两个框架又都依赖另一个框架 C。如果 A 中指定了兼容 1.1.2 而 B 中指定的是精确的 1.6.1 的话，app 的依赖关系就无法兼容了。&lt;/p&gt;
+
+&lt;p&gt;在框架开发中，如果我们依赖了别的框架，就必须考虑和其他框架及应用的兼容。
+为了避免这种依赖无法满足的情况，我们最好尽量选择最宽松的依赖关系。&lt;/p&gt;
+
+&lt;p&gt;一般情况下我们没有必要限定依赖的版本，如果被依赖的框架遵守我们上面提到的版本管理的规则的话，我们并没有必要去选择固定某一个版本，而应该尽可能放宽依赖限制以避免无法兼容。&lt;/p&gt;
+
+&lt;p&gt;如果在使用框架中遇到这样的情况的话，去向依赖版本较旧的框架的维护者提 issue 或者发 pull request 会是好选择。&lt;/p&gt;
+
+&lt;p&gt;有一些开发者表示在转向使用 Framework 以后遇到首次应用加载速度变长的问题 (&lt;a href=&quot;https://github.com/artsy/eigen/issues/586&quot;&gt;参考 1&lt;/a&gt;，&lt;a href=&quot;rdar://22948371%5D(http://openradar.appspot.com/radar?id=4867644041723904)&quot;&gt;参考 2&lt;/a&gt;。&lt;/p&gt;
+
+&lt;p&gt;社区讨论和探索结果表明可能是 Dynamic linker 在验证证书的时候的问题。
+这个时间和 app 中 dynamic framework 的数量为 n&lt;sup&gt;2&lt;/sup&gt; 时间复杂度。不过现在大家发现这可能是 Apple 在证书管理上的一个 bug，应该是只发生在开发阶段。可能现在比较安全的做法是控制使用的框架数量在合理范围之内，就我们公司的产品来说，并没有在生产环境遇到这个问题。如果你在 app 开发中遇到类似情况，这算是一个小提醒。&lt;/p&gt;
+
+&lt;p&gt;最后，因为现在 Swift 现在 Binary Interface 还没有稳定，不论是框架还是应用项目中所有的 Swift 代码都必须用同样版本的编译器进行编译。就是说，每当 Swift 版本升级，原来 build 过的 framework 需要重新构建否则无法通过编译。对框架开发者来说，保持使用最新 release 版本的编译器来发布框架就不会有大的问题。&lt;/p&gt;
+
+&lt;p&gt;在 Swift 3.0 以后语言的二进制接口将会稳定，届时 Swift 也将被集成到 iOS 系统中。也就是说到今年下半年的话这个问题就将不再存在。&lt;/p&gt;
+
+&lt;h2&gt;从今天开始开发框架&lt;/h2&gt;
+
+&lt;p&gt;做一个小的总结。现在这个时机对于中国的 Cocoa 开发者来说是非常好的时代，GitHub 中国用户很多，国内 iOS 开发圈子大家的分享精神和新东西的传播速度也非常快。可以说，我们中国开发者正在离这个世界的中心舞台越来越近，只要出现好东西的话，应该很快就能得到国内开发者的关注，继而登上 GitHub Trending 页面被世界所知。不要说五年，可能在两年之前，这都是难以想象的。&lt;/p&gt;
+
+&lt;blockquote&gt;
+&lt;p&gt;Write the code, change the world.&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;Swift 是随着这句口号诞生的，而现在开发者改变这个世界的力度可以说是前所未有的。&lt;/p&gt;
+
+&lt;p&gt;对于国内的开发者来说，我们真的应该希望少一些像 MingGeJS 这样的东西，而多一些能帮助这个世界的项目，以认真的态度多写一些有意义的代码，回馈开源社区，这于人于己都是一件好事。&lt;/p&gt;
+
+&lt;p&gt;希望中国的开发者能够在 Swift 这个新时代创造出更多世界级的框架，让这些框架能帮助全球的开发者一起构建更优秀的软件。&lt;/p&gt;
+</description>
+        <pubDate>Tue, 19 Jan 2016 14:32:24 +0800</pubDate>
+        <link>http://vno.onevcat.com/2016/01/create-framework/</link>
+        <guid isPermaLink="true">http://vno.onevcat.com/2016/01/create-framework/</guid>
+        
+        <category>能工巧匠集</category>
+        
+        
+      </item>
+    
+      <item>
+        <title>WWDC15 Session笔记 - Xcode 7 UI 测试初窥</title>
+        <description>&lt;p&gt;&lt;img src=&quot;/assets/images/2015/ui-testing-title.png&quot; alt=&quot;&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;Unit Test 在 iOS 开发中已经有足够多的讨论了。Objective-C 时代除了 Xcode 集成的 XCTest 以外，还有很多的测试相关的工具链可以使用，比如专注于提供 Mock 和 Stub 的 &lt;a href=&quot;http://ocmock.org&quot;&gt;OCMock&lt;/a&gt;，使用行为驱动测试的 &lt;a href=&quot;https://github.com/kiwi-bdd/Kiwi&quot;&gt;Kiwi&lt;/a&gt; 或者 &lt;a href=&quot;https://github.com/specta/specta&quot;&gt;Specta&lt;/a&gt; 等等。在 Swift 中，我们可以继续使用 XCTest 来进行测试，而 Swift 的 mock 和 stub 的处理，我们甚至不需要再借助于第三方框架，而使用 Swift 自身可以在方法中内嵌类型的特性来完成。关于这方面的内容，可以参看下 NSHipster &lt;a href=&quot;http://nshipster.com/xctestcase/&quot;&gt;这篇文章&lt;/a&gt;里关于 Mocking in Swift 部分的内容。&lt;/p&gt;
+
+&lt;p&gt;不过这些都是单元测试 (Unit Test) 的相关内容。单元测试非常适合用来做 app 的逻辑以及网络接口方面的测试，但是一个 app 所面向的最终人群还是使用的用户。对于用户来说，app 的功能和 UI 界面是否正确是判断这个 app 是否合格的更为直接标准。而传统的单元测试很难对 app 的功能或者 UI 进行测试。iOS 的开源社区有过一系列的尝试，比如 &lt;a href=&quot;https://github.com/kif-framework/KIF&quot;&gt;KIF 框架&lt;/a&gt;，Apple 自己的 &lt;a href=&quot;https://developer.apple.com/library/mac/documentation/DeveloperTools/Conceptual/InstrumentsUserGuide/UsingtheAutomationInstrument/UsingtheAutomationInstrument.html&quot;&gt;Automating UI Testing&lt;/a&gt; 或者 Facebook 的&lt;a href=&quot;https://github.com/facebook/ios-snapshot-test-case&quot;&gt;截图测试&lt;/a&gt;等。关于这些 UI 测试框架的更详细的介绍，可以参看 objc 中国上的 &lt;a href=&quot;http://objccn.io/issue-15-6/&quot;&gt;UI 测试&lt;/a&gt;和&lt;a href=&quot;http://objccn.io/issue-15-7/&quot;&gt;截图测试&lt;/a&gt;两篇文章。不过这些方法有一个共同的特点，那就是配置起来十分繁琐，使用上也有诸多不便。测试的目的是保证代码的质量和发布时的信心，以加速开发和迭代的效率；但是如果测试本身太过于难写复杂的话，反而会拖累开发速度。这大概也是 UI 测试所面临的最大窘境 -- 往往开发者在一个项目里写了一两个 UI 测试用例后，就会觉得难以维护，怯于巨大的时间成本，继而放弃。&lt;/p&gt;
+
+&lt;p&gt;Apple 在 Xcode 7 中新加入了一套 UI Testing 的工具，其目的就是解决这个问题。新的 UI Testing 比以往的解决方案要简单不少，特别是在创建测试用例的时候更集成了录制的功能，这有希望让 UI Testing 变得更为普及。这篇文章将通过一个简单的例子来说明 Xcode 7 中 UI Testing 的基本概念和使用方法。&lt;/p&gt;
+
+&lt;p&gt;本文是我的 &lt;a href=&quot;http://onevcat.com/2015/06/ios9-sdk/&quot;&gt;WWDC15 笔记&lt;/a&gt;中的一篇，本文所参考的有：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&quot;https://developer.apple.com/videos/wwdc/2015/?id=406&quot;&gt;UI Testing in Xcode&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h3&gt;UI Testing 和 Accessibility&lt;/h3&gt;
+
+&lt;p&gt;在开始实际深入到 UI Testing 之前，我们可能需要补充一点关于 app 可用性 (Accessibility) 的基本知识。&lt;a href=&quot;https://developer.apple.com/library/ios/documentation/UserExperience/Conceptual/iPhoneAccessibility/Introduction/Introduction.html&quot;&gt;UI Accessibility&lt;/a&gt; 早在 iOS 3.0 就被引入了，用来辅助身体不便的人士使用 app。VoiceOver 是 Apple 的屏幕阅读技术，而 UI Accessibility 的基本原则就是对屏幕上的 UI 元素进行分类和标记。两者配合，通过阅读或者聆听这些元素，用户就可以在不接触屏幕的情况下通过声音来使用 app。&lt;/p&gt;
+
+&lt;p&gt;Accessibility 的核心思想是对 UI 元素进行分类和标记 -- 将屏幕上的 UI 分类为像是按钮，文本框，cell 或者是静态文本 (也就是 label) 这样的类型，然后使用 identifier 来区分不同的 UI 元素。用户可以通过语音控制 app 的按钮点击，或是询问某个 label 的内容等等，十分方便。iOS SDK 中的控件都实现了默认的 Accessibility 支持，而我们如果使用自定义的控件的话，则需要自行使用 Accessibility 的 API 来进行添加。&lt;/p&gt;
+
+&lt;p&gt;但是因为最初 Accessibility 和 VoiceOver 都是基于英文的，所以在国内的 iOS 应用中并不是十分受到重视。不仅如此，因为添加完备的可用性支持对于开发者来说也是不小的额外工作量，所以除非应用有特殊的使用场景，对于 Accessibility 的支持和重视程度都十分有限。但是在 UI 测试中，可用性的作用就非常大了。UI 测试的本质就是定位在屏幕上的元素，实现一些像是点击或者拖动这样的操作交互，然后获取 UI 的状态进行断言来判断是否符合我们的预期。这个过程及其需求与 Accessibility 的功能是高度吻合的。这也是为什么 iOS 中大部分的 UI 测试框架都是基于 UI Accessibility 的原因，Xcode 7 的 UI Testing 也不例外。&lt;/p&gt;
+
+&lt;h3&gt;集成 UI Testing&lt;/h3&gt;
+
+&lt;p&gt;在项目中加入 UI Testing 的支持非常容易。如果是新项目的话，在新建项目时 UI Testing 就已经是默认选上的了:&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/ui-testing-1.png&quot; alt=&quot;&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;如果你要在已有项目中添加 UI Testing 的话，可以新建一个 iOS UI Testing 的 target：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/ui-testing-2.png&quot; alt=&quot;&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;无论使用那种方法，Xcode 将为你配置好你所需要的 UI 测试环境。我们这里通过一个简单的例子来说明 UI Testing 的基本使用方法。这个 app 非常简单，只有两个主要界面。首先是输入用户名密码的登陆界面，在登陆之后的带有一个 Switcher 的界面。用户可以通过点击这个开关来将下面的签到次数 +1。这个项目的代码可以在 GitHub 的&lt;a href=&quot;git@github.com:onevcat/UITestDemo.git&quot;&gt;这个仓库&lt;/a&gt;中找到。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/ui-testing-3.png&quot; alt=&quot;&quot;&gt;&lt;/p&gt;
+
+&lt;h3&gt;UI 行为录制和第一个测试&lt;/h3&gt;
+
+&lt;p&gt;相比起其他一些 UI 测试框架，Xcode 的 UI Testing 最为诱人的优点在于可以直接录制操作。我们首先来看看 UI Testing 的基本结构吧。在新建 UI Testing 后，我们会得到一个 &lt;code&gt;{ProjectName}UITests&lt;/code&gt; 文件，默认实现是：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-Swift&quot; data-lang=&quot;Swift&quot;&gt;import XCTest
+
+class UITestDemoUITests: XCTestCase {
+
+    override func setUp() {
+        super.setUp()
+
+        // Put setup code here. This method is called before the invocation of each test method in the class.
+
+        // In UI tests it is usually best to stop immediately when a failure occurs.
+        continueAfterFailure = false
+        // UI tests must launch the application that they test. Doing this in setup will make sure it happens for each test method.
+        XCUIApplication().launch()
+
+        // In UI tests it’s important to set the initial state - such as interface orientation - required for your tests before they run. The setUp method is a good place to do this.
+    }
+
+    override func tearDown() {
+        // Put teardown code here. This method is called after the invocation of each test method in the class.
+        super.tearDown()
+    }
+
+    func testExample() {
+       // Use recording to get started writing UI tests.
+       // Use XCTAssert and related functions to verify your tests produce the correct results.
+    }    
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;在 &lt;code&gt;setUp&lt;/code&gt; 中，我们使用 &lt;code&gt;XCUIApplication&lt;/code&gt; 的 &lt;code&gt;launch&lt;/code&gt; 方法来启动测试 app。和单元测试的思路类似，在每一个 UI Testing 执行之前，我们都希望从一个“干净”的 app 状态开始进行。&lt;code&gt;XCUIApplication&lt;/code&gt; 是 &lt;code&gt;UIApplication&lt;/code&gt; 在测试进程中的代理 (proxy)，我们可以在 UI 测试中通过这个类型和应用本身进行一些交互，比如开始或者终止一个 app。我们先来测试在没有输入时直接点击 Login 按钮的运行情况。在 test 文件中加入一个方法，&lt;code&gt;testEmptyUserNameAndPassword&lt;/code&gt;，在模拟器中运行程序后，将输入光标放在方法实现中，并点击工具栏上的录制按钮，就可以进行实时录制了：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/ui-testing-4.png&quot; alt=&quot;&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;第一个测试非常简单，我们直接保持用户名和密码文本框为空，直接点击 login。这时 UI 录制会记录下这次点击行为：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func testEmptyUserNameAndPassword() {
+    XCUIApplication().buttons[&amp;quot;Login&amp;quot;].tap()
+
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;&lt;code&gt;XCUIApplication()&lt;/code&gt; 我们刚才说过，是一个在 UI Testing 中代表整个 app 的对象。然后我们使用 &lt;code&gt;buttons&lt;/code&gt; 来获取当前屏幕上所有的按钮的代理。使用 &lt;code&gt;buttons&lt;/code&gt; 来获取一个对 app 的 query 对象，它可以用来寻找 app 内所有被标记为按钮的 UI 元素，其实上它是 &lt;code&gt;XCUIApplication().descendantsMatchingType(.Button)&lt;/code&gt; 的简写形式。同样地，我们还有像是 &lt;code&gt;TextField&lt;/code&gt;，&lt;code&gt;Cell&lt;/code&gt; 之类的类型，完整的类型列表可以在&lt;a href=&quot;http://masilotti.com/xctest-documentation/Constants/XCUIElementType.html&quot;&gt;这里&lt;/a&gt;找到。类似这样的从 app 中寻找元素的方法，所得到返回是一个 &lt;code&gt;XCUIElementQuery&lt;/code&gt; 对象。除了 &lt;code&gt;descendantsMatchingType&lt;/code&gt; 以外，还有仅获取当前层级子元素的 &lt;code&gt;childrenMatchingType&lt;/code&gt; 和所有包含的元素的 &lt;code&gt;containingType&lt;/code&gt;。我们可以通过级联和结合使用这些方法获取到我们想要的层级的元素。&lt;/p&gt;
+
+&lt;p&gt;当得到一个可用的 &lt;code&gt;XCUIElementQuery&lt;/code&gt; 后，我们就可以进一步地获取代表 app 中具体 UI 元素的 &lt;code&gt;XCUIElement&lt;/code&gt; 了。和 &lt;code&gt;XCUIApplication&lt;/code&gt; 类似，&lt;code&gt;XCUIElement&lt;/code&gt; 也只是 app 中的 UI 元素在测试框架中的代理。我们不能直接通过得到的 &lt;code&gt;XCUIElement&lt;/code&gt; 来直接访问被测 app 中的元素，而只能通过 Accessibility 中的像是 &lt;code&gt;identifier&lt;/code&gt; 或者 &lt;code&gt;frame&lt;/code&gt; 这样的属性来获取 UI 的信息。关于具体的可用属性，可以参看 &lt;a href=&quot;http://masilotti.com/xctest-documentation/Protocols/XCUIElementAttributes.html&quot;&gt;&lt;code&gt;XCUIElementAttributes&lt;/code&gt;&lt;/a&gt; 的文档。&lt;/p&gt;
+
+&lt;blockquote&gt;
+&lt;p&gt;其实 &lt;code&gt;XCUIApplication&lt;/code&gt; 是 &lt;code&gt;XCUIElement&lt;/code&gt; 的子类，了解到这一点后，我们就不难理解 &lt;code&gt;XCUIApplication&lt;/code&gt; 也是一个代理的事实了。&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;在这里 &lt;code&gt;XCUIApplication().buttons[&amp;quot;Login&amp;quot;]&lt;/code&gt;，做的是在应用当前界面中找到所有的按钮，然后找到 Login 按钮。接下来我们对这个 UI 代理发送 &lt;code&gt;tap&lt;/code&gt; 进行点击。在我们的 app 中，点击 Login 后我们模拟了一个网络请求，在没有填写用户名和密码的情况下，将弹出一个 alert 来提示用户需要输入必要的登陆信息：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/ui-testing-5.png&quot; alt=&quot;&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;虽然 UI Testing 的交互会等待 UI 空闲后再进行之后的交互操作，但是由于登陆是在后台线程完成的，UI 其实已经空闲下来了，因此我们在测试中也需要等待一段时间，然后对这个 alert 是否弹出进行判断。将 &lt;code&gt;testEmptyUserNameAndPassword&lt;/code&gt; 中的内容改写为：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func testEmptyUserNameAndPassword() {
+    let app = XCUIApplication()
+    app.buttons[&amp;quot;Login&amp;quot;].tap()
+
+    let alerts = app.alerts
+    let label = app.alerts.staticTexts[&amp;quot;Empty username/password&amp;quot;]
+
+    let alertCount = NSPredicate(format: &amp;quot;count == 1&amp;quot;)
+    let labelExist = NSPredicate(format: &amp;quot;exists == 1&amp;quot;)
+
+    expectationForPredicate(alertCount, evaluatedWithObject: alerts, handler: nil)
+    expectationForPredicate(labelExist, evaluatedWithObject: label, handler: nil)
+
+    waitForExpectationsWithTimeout(5, handler: nil)
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;注意我们这里用了一个预言期望，而不是直接采用断言。按照一般思维来说，我们可能会倾向于使用像是 dispatch_after 来让断言延迟，类似这样：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func testEmptyUserNameAndPassword() {
+    //...
+    app.buttons[&amp;quot;Login&amp;quot;].tap()
+
+    let expection = expectationWithDescription(&amp;quot;wait for login&amp;quot;)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, Int64(3 * NSEC_PER_SEC)), dispatch_get_main_queue()) { () -&amp;gt; Void in
+        XCTAssertEqual(alerts.count, 1, &amp;quot;There should be an alert.&amp;quot;)
+        expection.fulfill()
+    }
+
+    waitForExpectationsWithTimeout(5, handler: nil)
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;但是你会发现这段代码中 block 的部分并不会执行，这是因为在 UI Testing 中有不能 dispatch 到主线程的限制。我们可以通过把 main thread 改为其他 thread 来让代码进入 block，但是这会导致断言崩溃。因此，对于这种需要在一定时间之后再进行判断的测试例，可以使用 &lt;code&gt;expectationForPredicate&lt;/code&gt; 来对未来的状态作出假设并测试在规定的超时时间内是否得到理想的结果。在 &lt;code&gt;testEmptyUserNameAndPassword&lt;/code&gt; 的例子中，我们应该在点击 Login 后得到的是一个 alert 框，并且其中有一个 label，文本是 &amp;quot;Empty username/password&amp;quot;。Cmd+U，测试通过！你也可以打开模拟器查看整个过程，同时试着更改一下 Predicate 中的内容，看看运行的结果，来证明测试确实有效。&lt;/p&gt;
+
+&lt;h3&gt;文本输入和 ViewController 切换&lt;/h3&gt;
+
+&lt;p&gt;接下来可以试着测试下登陆成功。我们有一组可用的用户名/密码，现在要做的是用 UI Testing 的方式在用户名和密码的文本框中。最简单的方式还是直接使用 UI 动作的录制功能。对应的测试代码如下：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func testLoginSuccessfully() {
+    let app = XCUIApplication()
+    let element = app.otherElements.containingType(.NavigationBar, identifier:&amp;quot;Login&amp;quot;).childrenMatchingType(.Other).element.childrenMatchingType(.Other).element.childrenMatchingType(.Other).element.childrenMatchingType(.Other).elementBoundByIndex(1)
+    let textField = element.childrenMatchingType(.Other).elementBoundByIndex(0).childrenMatchingType(.TextField).element
+    textField.tap()
+    textField.typeText(&amp;quot;onevcat&amp;quot;)
+    element.childrenMatchingType(.Other).elementBoundByIndex(1).childrenMatchingType(.SecureTextField).element.typeText(&amp;quot;123&amp;quot;)
+
+    // Other more test code
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;自动录制生成的代码使用了很多 query 来查询文本框，虽然这么做是可以找到合适的文本框，但是现在的做法显然难以理解。这是因为我们没有对这两个 textfield 的 identifier 进行设置，因此无法用下标的方式进行访问。我们可以通过在 Interface Builder 或者代码中进行设置。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/ui-testing-6.png&quot; alt=&quot;&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;然后就可以在测试方法中把寻找元素的 query 改为更好看的方式，并且加上测试 ViewController 切换的相关代码了：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func testLoginSuccessfully() {
+
+    let userName = &amp;quot;onevcat&amp;quot;
+    let password = &amp;quot;123&amp;quot;
+
+    let app = XCUIApplication()
+
+    let userNameTextField = app.textFields[&amp;quot;username&amp;quot;]
+    userNameTextField.tap()
+    userNameTextField.typeText(userName)
+
+    let passwordTextField = app.secureTextFields[&amp;quot;password&amp;quot;]
+    passwordTextField.tap()
+    passwordTextField.typeText(password)
+
+    app.buttons[&amp;quot;Login&amp;quot;].tap()
+
+    let navTitle = app.navigationBars[userName].staticTexts[userName]
+    expectationForPredicate(NSPredicate(format: &amp;quot;exists == 1&amp;quot;), evaluatedWithObject: navTitle, handler: nil)
+
+    waitForExpectationsWithTimeout(5, handler: nil)
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;blockquote&gt;
+&lt;p&gt;注意在当前的 Xcode 版本 (7.0 7A218) 中 UI 录制在对于有 identifier 的文本框时，没有自动插入 &lt;code&gt;tap()&lt;/code&gt;，这会导致测试时出现 “UI Testing Failure - Neither element nor any descendant has keyboard focus on secureTextField” 的错误。我们可以手动在输入文本 (&lt;code&gt;typeText&lt;/code&gt;) 之前加入 &lt;code&gt;tap&lt;/code&gt; 的调用。相信在之后的 Xcode 版本中这个问题会得到修正。&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;对于 ViewController 切换的判断，我们可以通过判断 navigation bar 上的 title 是否正确来加以判断。&lt;/p&gt;
+
+&lt;h3&gt;实时的 UI 反馈测试和关于 XCUIElementQuery 的说明&lt;/h3&gt;
+
+&lt;p&gt;我们接下来测试 DetailViewController 中的 Switcher 点击。在成功登陆之后，我们可以看到一个默认为 off 状态的 switcher 按钮。点击打开这个按钮，下面的 count label 计数就会加一。首先我们需要成功登陆，在上面的测试例 (&lt;code&gt;testLoginSuccessfully&lt;/code&gt;) 我们已经测试了成功登陆，我们先在新的测试方法中模拟登陆过程：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func testSwitchAndCount() {
+    let userName = &amp;quot;onevcat&amp;quot;
+    let password = &amp;quot;123&amp;quot;
+
+    let app = XCUIApplication()
+
+    let userNameTextField = app.textFields[&amp;quot;username&amp;quot;]
+    userNameTextField.tap()
+    userNameTextField.typeText(userName)
+
+    let passwordTextField = app.secureTextFields[&amp;quot;password&amp;quot;]
+    passwordTextField.tap()
+    passwordTextField.typeText(password)
+
+    app.buttons[&amp;quot;Login&amp;quot;].tap()
+
+    // To be continued..
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;接下来因为 Login 是在后台进行的，我们需要等一段时间，让新的 DetailViewController 出现。在上面两个测试例中，我们直接用 expectationForPredicate 来作为断言，这样 Xcode 只需要在超时之前观测到符合断言的变化即可以结束测试。而在这里，我们要在新的 View 里进行 UI 交互，这就需要一定时间的等待 (包括模拟的网络请求和 UI 迁移的动画等)。因为 UI 测试和 app 本身是在不同进程中运行的，我们可以简单地使用 &lt;code&gt;sleep&lt;/code&gt; 来等待。接下来我们点击这个 switcher 并添加断言。在上面代码中注释的地方接着写：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func testSwitchAndCount() {
+    //...
+
+    sleep(3)
+
+    let switcher = app.switches[&amp;quot;checkin&amp;quot;]
+    let l = app.staticTexts[&amp;quot;countLabel&amp;quot;]
+
+    switcher.tap()
+    XCTAssertEqual(l.label, &amp;quot;1&amp;quot;, &amp;quot;Count label should be 1 after clicking check in.&amp;quot;)
+
+    switcher.tap()
+    XCTAssertEqual(l.label, &amp;quot;0&amp;quot;, &amp;quot;And 0 after clicking again.&amp;quot;)
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;&lt;code&gt;checkin&lt;/code&gt; 和 &lt;code&gt;countLabel&lt;/code&gt; 是我们在 IB 中为 UI 设置的 identifier。默认情况下，我们可以通过 &lt;code&gt;label&lt;/code&gt; 属性来获取一个 Label 的文字值。&lt;/p&gt;
+
+&lt;p&gt;到此为止，这个简单的 demo 就书写完毕了。当然，实际的 app 中的情况会比这种 demo 复杂得多，但是基本的思路和步骤是一致的 -- 通过 query 寻找要交互的 UI 元素，进行交互，判断结果。在 UI 录制的帮助下，我们一般只需要关心如何书写断言和对结果进行判断，这大大节省了书写和维护测试的时间。&lt;/p&gt;
+
+&lt;p&gt;对于 &lt;code&gt;XCUIElementQuery&lt;/code&gt;，还有一点需要特别说明的。Query 的执行是延迟的，它和最后我们得到的 &lt;code&gt;XCUIElement&lt;/code&gt; 并不是一一对应的。和 &lt;code&gt;NSURL&lt;/code&gt; 与请求到的内容的关系类似，随着时间的变化，同一个 URL 有可能请求到不同的内容。我们生成 Query，然后在通过下标或者是访问方法获取的时候才真正从 app 中寻找对应的 UI 元素。这就是说，随着我们的 UI 的变化，同样的 query 也是有可能获取到不用的元素的。这在某些元素会消失或者 identifier 变化的时候是需要特别注意的。&lt;/p&gt;
+
+&lt;h3&gt;小结&lt;/h3&gt;
+
+&lt;p&gt;UI Testing 在易用性上比 KIF 这样的框架要有所进步，随着 UI Testing 的推出，Apple 也将原来的 UI Automation 一系列内容标记为弃用。这意味着 UI Testing 至少在今后一段时间内将会是 iOS 开发中的首选工具。但是我们也应该看到，基于 Accessibility 的测试方式有时候并不是很直接。在这个限制下，我们只能得到 UI 的代理对象，而不是 UI 元素本身，这让我们无法得到关于 UI 元素更多的信息 (比如直接获取 UI 元素中的内容，或者与 ViewController 中的相关的值)，现在的 UI Testing 在很大程度上还停留在比较简易的阶段。&lt;/p&gt;
+
+&lt;p&gt;但是相比使用 UIAutomation 在 Instruments 中用 JavaScript 与 app 交互，我们现在可以用 Swift 或者 Objective-C 直接在 Xcode 里进行 UI 测试了，这使得测试时可以方便地进行和被调试。Xcode 7.0 中的 UI Testing 作为第一个版本，还有不少限制和 bug，使用起来也有不少“小技巧”，很多时候可能并没有像单元测试那样直接。但即便如此，使用 UI Testing 来作为人工检查的替代和防止开发过程中 bug 引入还是很有意义的，相比起开发人员，也许 QA 人员从 UI 录制方面收益更多。如果 QA 职位的员工可以掌握一些基本的 UI Testing 内容的话，应该可以极大地缩短他们的工作时间和压力。而且相信 Apple 也会不断改进和迭代 UI Testing，并以此驱动 app 质量的提升，所以尽早掌握这一技术还是十分必要的。&lt;/p&gt;
+</description>
+        <pubDate>Sun, 27 Sep 2015 19:58:47 +0800</pubDate>
+        <link>http://vno.onevcat.com/2015/09/ui-testing/</link>
+        <guid isPermaLink="true">http://vno.onevcat.com/2015/09/ui-testing/</guid>
+        
+        <category>能工巧匠集</category>
+        
+        
+      </item>
+    
+      <item>
+        <title>WWDC15 Session笔记 - 30 分钟开发一个简单的 watchOS 2 app</title>
+        <description>&lt;p&gt;Apple Watch 和 watchOS 第一代产品只允许用户在 iPhone 设备上进行计算，然后将结果传输到手表上进行显示。在这个框架下，手表充当的功能在很大程度上只是手机的另一块小一些的显示器。而在 watchOS 2 中，Apple 开放了在手表端直接进行计算的能力，一些之前无法完成的 app 现在也可以进行构建了。本文将通过一个很简单的天气 app 的例子，讲解一下 watchOS 2 中新引入的一些特性的使用方法。&lt;/p&gt;
+
+&lt;p&gt;本文是我的 &lt;a href=&quot;http://onevcat.com/2015/06/ios9-sdk/&quot;&gt;WWDC15 笔记&lt;/a&gt;中的一篇，在 WWDC15 中涉及到 watchOS 2 的相关内容的 session 非常多，本文所参考的有：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&quot;https://developer.apple.com/videos/wwdc/2015/?id=105&quot;&gt;Introducing WatchKit for watchOS 2&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&quot;https://developer.apple.com/videos/wwdc/2015/?id=207&quot;&gt;WatchKit In-Depth, Part 1&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&quot;https://developer.apple.com/videos/wwdc/2015/?id=208&quot;&gt;WatchKit In-Depth, Part 2&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&quot;https://developer.apple.com/videos/wwdc/2015/?id=713&quot;&gt;Introducing Watch Connectivity&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&quot;https://developer.apple.com/videos/wwdc/2015/?id=108&quot;&gt;Building Watch Apps&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&quot;https://developer.apple.com/videos/wwdc/2015/?id=209&quot;&gt;Creating Complications with ClockKit&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h2&gt;项目简介&lt;/h2&gt;
+
+&lt;p&gt;作为一个示例项目，我们就来构建一个最简单的天气 app 吧。本文将一步步带你从零开始构建一个相对完整的 iOS + watch app。这个 app 的 iOS 端很简单，从数据源取到数据，然后解析成天气的 model 后，通过一个 PageViewController 显示出来。为了让 demo 更有说服力，我们将展示当前日期以及前后两天的天气情况，包括天气状况和气温。在手表端，我们希望构建一个类似的 app，可以展示这几天的天气情况。另外我们当然也介绍如何利用 watchOS 2 的一些新特性，比如 complications 和 Time Travel 等等。&lt;/p&gt;
+
+&lt;h2&gt;开始&lt;/h2&gt;
+
+&lt;p&gt;虽然本文的重点是 watchOS，但是为了完整性，我们还是从开头开始来构建这个 app 吧。因为不管是 watchOS 1 还是 2，一个手表 app 都是无法脱离手机 app 单独存在和申请的。所以我们首先来做的是一个像模像样的 iOS app 吧。&lt;/p&gt;
+
+&lt;h3&gt;新建项目&lt;/h3&gt;
+
+&lt;p&gt;第一步当然是使用 Xcode 7 新建一个工程，这里我们直接选择 iOS App with WatchKit App，这样 Xcode 将直接帮助我们建立一个带有 watchOS app 的 iOS 应用。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/step-1.png&quot; alt=&quot;step-1&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;在接下来的画面中，我们选中 Include Complication 选项，因为我们希望制作一个包含有 Complication 的 watch app。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/step-2.png&quot; alt=&quot;step-2&quot;&gt;&lt;/p&gt;
+
+&lt;h3&gt;UI&lt;/h3&gt;
+
+&lt;p&gt;这个 app 的 UI 部分比较简单，我将使用到的素材都放到了&lt;a href=&quot;/assets/images/2015/WatchWeatherImage.zip&quot;&gt;这里&lt;/a&gt;。你可以下载这些素材，并把它们解压并拖拽到项目 iOS app 的 Assets.xcassets 里去：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/step-3.png&quot; alt=&quot;step-3&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;接下来，我们来构建 UI 部分。我们想要使用 PageViewController 来作为 app 的导航，首先，在 Main.StoryBoard 中删掉原来的 ViewController，并新加一个 Page View Controller，然后在它的 Attributes Inspector 中将 Transition Style 改为 Scroll，并勾选上 Is Initial View Controller。这将使这个 view controller 成为整个 app 的入口。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/step-4.png&quot; alt=&quot;step-4&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;接下来，我们需要将这个 Page View Controller 和代码关联起来。首先将 ViewController.swift 文件中，将 ViewController 的继承关系从 &lt;code&gt;UIViewController&lt;/code&gt; 改为 &lt;code&gt;UIPageViewController&lt;/code&gt;。&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;class ViewController: UIPageViewController {
+    ...
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;然后我们就可以在 StoryBoard 文件中将刚才的 Page View Controller 的 class 改为我们的 &lt;code&gt;ViewController&lt;/code&gt; 了。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/step-5.png&quot; alt=&quot;step-5&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;另外我们还需要一个实际展示天气的 View Controller。创建一个继承自 &lt;code&gt;UIViewController&lt;/code&gt; 的 &lt;code&gt;WeatherViewController&lt;/code&gt;，然后将 WeatherViewController.swift 的内容替换为：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;import UIKit
+
+class WeatherViewController: UIViewController {
+
+    enum Day: Int {
+        case DayBeforeYesterday = -2
+        case Yesterday
+        case Today
+        case Tomorrow
+        case DayAfterTomorrow
+    }
+
+    var day: Day?
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;这里仅只是定义了一个 &lt;code&gt;Day&lt;/code&gt; 的枚举，它将用来标记这个 &lt;code&gt;WeatherViewController&lt;/code&gt; 所代表的日期 (可能你会说把 &lt;code&gt;Day&lt;/code&gt; 在 ViewController 里并不是很好的选择，没错，但是放在这里有助于我们快速搭建 app，在之后我们会对此进行重构)。接下来，我们在 StoryBoard 中添加一个 ViewController，并将它的 class 改为 &lt;code&gt;WeatherViewController&lt;/code&gt;。我们可以在这里构建 UI，对于这个 demo 来说，一个简单的背景，加上表示天气的图标和表示温度的标签就足够了。因为这里并不是一个关于 Auto Layout 或是 Size Class 的 demo，所以就不详细一步步地做了，我随意拖了拖 UI 和约束，最后结果如下图所示。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/step-6.png&quot; alt=&quot;step-6&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;接下来就是从 StoryBoard 中把需要的 IBOutlet 拖出来。我们需要天气图标，最高最低温度的 label。完成这些 UI 工作之后的项目可以在 GitHub 的&lt;a href=&quot;https://github.com/onevcat/WatchWeather/releases/tag/ui-setup&quot;&gt;这个 tag&lt;/a&gt; 下找到，如果你不想自己完成这些步骤的话，也可以直接使用这个 tag 的源文件来继续下面的 demo。当然，如果你对 AutoLayout 和 Interface Builder 还不熟悉的话，这会是一个很好的机会来从简单的布局入手，去理解对 IB 的使用。关于更多 IB 和 StoryBoard 的教程，推荐 Raywenderlich 的这两篇系列文章：&lt;a href=&quot;http://www.raywenderlich.com/81879/storyboards-tutorial-swift-part-1&quot;&gt;Storyboards Tutorial in Swift&lt;/a&gt; 和 &lt;a href=&quot;http://www.raywenderlich.com/83129/beginning-auto-layout-tutorial-swift-part-1&quot;&gt;Auto Layout Tutoria&lt;/a&gt;。&lt;/p&gt;
+
+&lt;p&gt;然后我们可以考虑先把 Page View Controller 的框架实现出来。在 &lt;code&gt;ViewController.swift&lt;/code&gt; 中，我们首先在 &lt;code&gt;ViewController&lt;/code&gt; 类中加入以下方法：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func weatherViewControllerForDay(day: WeatherViewController.Day) -&amp;gt; UIViewController {
+
+    let vc = storyboard?.instantiateViewControllerWithIdentifier(&amp;quot;WeatherViewController&amp;quot;) as! WeatherViewController
+    let nav = UINavigationController(rootViewController: vc)
+    vc.day = day
+
+    return nav
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;这将从当前的 StroyBoard 里寻找 id 为 &amp;quot;WeatherViewController&amp;quot; 的 ViewController，并且初始化它。我们希望能为每一天的天气显示一个 title，一个比较理想的做法就是直接将我们的 WeatherViewController 嵌套在 navigation controller 里，这样我们就可以直接使用 navigation bar 来显示标题，而不用去操心它的布局了。我们刚才并没有为 &lt;code&gt;WeatherViewController&lt;/code&gt; 指定 id，在 StoryBoard 中，找到 WeatherViewController，然后在 Identity 里添加即可：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/step-7.png&quot; alt=&quot;step-7&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;接下来我们来实现 &lt;code&gt;UIPageViewControllerDataSource&lt;/code&gt;。在 &lt;code&gt;ViewController.swift&lt;/code&gt; 的 &lt;code&gt;viewDidLoad&lt;/code&gt; 里加入：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;dataSource = self
+let vc = weatherViewControllerForDay(.Today)
+setViewControllers([vc], direction: .Forward, animated: true, completion: nil)
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;首先它将 &lt;code&gt;viewController&lt;/code&gt; 自己设置为 dataSource。然后设定了初始需要表示的 viewController。对于 &lt;code&gt;UIPageViewControllerDataSource&lt;/code&gt; 的实现，我们在同一文件中加入一个 &lt;code&gt;ViewController&lt;/code&gt; 的 extension 来搞定：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;extension ViewController: UIPageViewControllerDataSource {
+    func pageViewController(pageViewController: UIPageViewController, viewControllerBeforeViewController viewController: UIViewController) -&amp;gt; UIViewController? {
+        guard let nav = viewController as? UINavigationController,
+                  viewController = nav.viewControllers.first as? WeatherViewController,
+                  day = viewController.day else {
+            return nil
+        }
+
+        if day == .DayBeforeYesterday {
+            return nil
+        }
+
+        guard let earlierDay = WeatherViewController.Day(rawValue: day.rawValue - 1) else {
+            return nil
+        }
+
+        return self.weatherViewControllerForDay(earlierDay)
+    }
+
+    func pageViewController(pageViewController: UIPageViewController, viewControllerAfterViewController viewController: UIViewController) -&amp;gt; UIViewController? {
+        guard let nav = viewController as? UINavigationController,
+            viewController = nav.viewControllers.first as? WeatherViewController,
+            day = viewController.day else {
+                return nil
+        }
+
+        if day == .DayAfterTomorrow {
+            return nil
+        }
+
+        guard let laterDay = WeatherViewController.Day(rawValue: day.rawValue + 1) else {
+            return nil
+        }
+
+        return self.weatherViewControllerForDay(laterDay)
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;这两个方法分别根据输入的 View Controller 对象来确定前一个和后一个 View Controller，如果返回 &lt;code&gt;nil&lt;/code&gt; 则说明没有之前/后的页面了。另外，我们可能还想要先将 title 显示出来，以确定现在的架构是否正确工作。在 &lt;code&gt;WeatherViewController.swift&lt;/code&gt; 的 Day 枚举里添加如下属性：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;var title: String {
+            let result: String
+            switch self {
+            case .DayBeforeYesterday: result = &amp;quot;前天&amp;quot;
+            case .Yesterday: result = &amp;quot;昨天&amp;quot;
+            case .Today: result = &amp;quot;今天&amp;quot;
+            case .Tomorrow: result = &amp;quot;明天&amp;quot;
+            case .DayAfterTomorrow: result = &amp;quot;后天&amp;quot;
+            }
+            return result
+        }
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;然后将 &lt;code&gt;day&lt;/code&gt; 属性改为：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;var day: Day? {
+    didSet {
+        title = day?.title
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;运行 app，现在我们应该可以在五个页面之间进行切换了。你也可以从 GitHub 上&lt;a href=&quot;https://github.com/onevcat/WatchWeather/releases/tag/basic-workflow&quot;&gt;对应的 tag&lt;/a&gt; 中下载到目前为止的项目。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/step-8.png&quot; alt=&quot;step-8&quot;&gt;&lt;/p&gt;
+
+&lt;h3&gt;重构和 Model&lt;/h3&gt;
+
+&lt;p&gt;很难有人一次性就把代码写得完美无瑕，这也是重构的意义。重构从来不是一个“等待项目完成后再开始”的活动，而是应该随着项目的展开和进行，一旦发现有可能存在问题的地方，就尽快进行改进。比如在上面我们将 &lt;code&gt;Day&lt;/code&gt; 放在了 &lt;code&gt;WeatherViewController&lt;/code&gt; 中，这显然不是一个很好地选择。这个枚举更接近于 Model 层的东西而非控制层，我们应该将它迁移到另外的地方。同样现在还需要实现的还有天气的 Model，即表征天气状况和高低温度的对象。我们将这些内容提取出来，放到一个 framework 中去，以便使用的维护。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/step-9.png&quot; alt=&quot;step-9&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;我们首先对现有的 &lt;code&gt;Day&lt;/code&gt; 进行迁移。创建一个新的 Cocoa Touch Framework target，命名为 &lt;code&gt;WatchWeatherKit&lt;/code&gt;。在这个 target 中新建 &lt;code&gt;Day.swift&lt;/code&gt; 文件，其中内容为：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;public enum Day: Int {
+    case DayBeforeYesterday = -2
+    case Yesterday
+    case Today
+    case Tomorrow
+    case DayAfterTomorrow
+
+    public var title: String {
+        let result: String
+        switch self {
+        case .DayBeforeYesterday: result = &amp;quot;前天&amp;quot;
+        case .Yesterday: result = &amp;quot;昨天&amp;quot;
+        case .Today: result = &amp;quot;今天&amp;quot;
+        case .Tomorrow: result = &amp;quot;明天&amp;quot;
+        case .DayAfterTomorrow: result = &amp;quot;后天&amp;quot;
+        }
+        return result
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;这就是原来存在于 &lt;code&gt;WeatherViewController&lt;/code&gt; 中的代码，只不过将必要的内容申明为了 &lt;code&gt;public&lt;/code&gt;，这样我们才能在别的 target 中使用它们。我们现在可以将原来的 Day 整个删除掉了，接下来，我们在 &lt;code&gt;WeatherViewController.swift&lt;/code&gt; 和 &lt;code&gt;ViewController.swift&lt;/code&gt; 最上面加入 &lt;code&gt;import WatchWeatherKit&lt;/code&gt;，并将 &lt;code&gt;WeatherViewController.Day&lt;/code&gt; 改为 &lt;code&gt;Day&lt;/code&gt;。现在 &lt;code&gt;Day&lt;/code&gt; 枚举就被隔离出 View Controller 了。&lt;/p&gt;
+
+&lt;p&gt;然后实现天气的 Model。在 &lt;code&gt;WatchWeatherKit&lt;/code&gt; 里新建 &lt;code&gt;Weather.swift&lt;/code&gt;，并书写如下代码：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;import Foundation
+
+public struct Weather {
+    public enum State: Int {
+        case Sunny, Cloudy, Rain, Snow
+    }
+
+    public let state: State
+    public let highTemperature: Int
+    public let lowTemperature: Int
+    public let day: Day
+
+    public init?(json: [String: AnyObject]) {
+
+        guard let stateNumber = json[&amp;quot;state&amp;quot;] as? Int,
+                  state = State(rawValue: stateNumber),
+                  highTemperature = json[&amp;quot;high_temp&amp;quot;] as? Int,
+                  lowTemperature = json[&amp;quot;low_temp&amp;quot;] as? Int,
+                  dayNumber = json[&amp;quot;day&amp;quot;] as? Int,
+                  day = Day(rawValue: dayNumber) else {
+            return nil
+        }
+
+
+        self.state = state
+        self.highTemperature = highTemperature
+        self.lowTemperature = lowTemperature
+        self.day = day
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;Model 包含了天气的状态信息和最高最低温度，我们稍后会用一个 JSON 字符串中拿到字典，然后初始化它。如果字典中信息不全的话将直接返回 &lt;code&gt;nil&lt;/code&gt; 表示天气对象创建失败。到此为止的项目可以在 GitHub 的 &lt;a href=&quot;https://github.com/onevcat/WatchWeather/releases/tag/model&quot;&gt;model tag&lt;/a&gt; 中找到。&lt;/p&gt;
+
+&lt;h3&gt;获取天气信息&lt;/h3&gt;
+
+&lt;p&gt;接下来的任务是获取天气的 JSON，作为一个 demo 我们完全可以用一个本地文件替代网络请求部分。不过因为之后在介绍 watch app 时会用到使用手表进行网络请求，所以这里我们还是从网络来获取天气信息。为了简单，假设我们从服务器收到的 JSON 是这个样子的：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-json&quot; data-lang=&quot;json&quot;&gt;{&amp;quot;weathers&amp;quot;: [
+    {&amp;quot;day&amp;quot;: -2, &amp;quot;state&amp;quot;: 0, &amp;quot;low_temp&amp;quot;: 18, &amp;quot;high_temp&amp;quot;: 25},
+    {&amp;quot;day&amp;quot;: -1, &amp;quot;state&amp;quot;: 2, &amp;quot;low_temp&amp;quot;: 9, &amp;quot;high_temp&amp;quot;: 14},
+    {&amp;quot;day&amp;quot;: 0, &amp;quot;state&amp;quot;: 1, &amp;quot;low_temp&amp;quot;: 12, &amp;quot;high_temp&amp;quot;: 16},
+    {&amp;quot;day&amp;quot;: 1, &amp;quot;state&amp;quot;: 3, &amp;quot;low_temp&amp;quot;: 2, &amp;quot;high_temp&amp;quot;: 6},
+    {&amp;quot;day&amp;quot;: 2, &amp;quot;state&amp;quot;: 0, &amp;quot;low_temp&amp;quot;: 19, &amp;quot;high_temp&amp;quot;: 28}
+    ]}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;其中 &lt;code&gt;day&lt;/code&gt; 0 表示今天，&lt;code&gt;state&lt;/code&gt; 是天气状况的代码。&lt;/p&gt;
+
+&lt;p&gt;我们已经有 &lt;code&gt;Weather&lt;/code&gt; 这个 Model 类型了，现在我们需要一个 API Client 来获取这个信息。在 &lt;code&gt;WeatherWatchKit&lt;/code&gt; target 中新建一个文件 &lt;code&gt;WeatherClient.swift&lt;/code&gt;，并填写以下代码：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;import Foundation
+
+public let WatchWeatherKitErrorDomain = &amp;quot;com.onevcat.WatchWeatherKit.error&amp;quot;
+public struct WatchWeatherKitError {
+    public static let CorruptedJSON = 1000
+}
+
+public struct WeatherClient {
+
+    public static let sharedClient = WeatherClient()
+    let session = NSURLSession.sharedSession()
+
+    public func requestWeathers(handler: ((weather: [Weather?]?, error: NSError?) -&amp;gt; Void)?) {
+
+        guard let url = NSURL(string: &amp;quot;https://raw.githubusercontent.com/onevcat/WatchWeather/master/Data/data.json&amp;quot;) else {
+            handler?(weather: nil, error: NSError(domain: NSURLErrorDomain, code: NSURLErrorBadURL, userInfo: nil))
+            return
+        }
+
+        let task = session.dataTaskWithURL(url) { (data, response, error) -&amp;gt; Void in
+            if error != nil {
+                handler?(weather: nil, error: error)
+            } else {
+                do {
+                    let object = try NSJSONSerialization.JSONObjectWithData(data!, options: .AllowFragments)
+                    if let dictionary = object as? [String: AnyObject] {
+                        handler?(weather: Weather.parseWeatherResult(dictionary), error: nil)
+                    }
+                } catch _ {
+                    handler?(weather: nil,
+                               error: NSError(domain: WatchWeatherKitErrorDomain,
+                                                code: WatchWeatherKitError.CorruptedJSON,
+                                            userInfo: nil))
+                }
+            }
+        }
+
+        task!.resume()
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;其实我们的 client 现在有点过度封装和耦合，不过作为 demo 来说的话还不错。它现在只有一个方法，就是从&lt;a href=&quot;https://raw.githubusercontent.com/onevcat/WatchWeather/master/Data/data.json&quot;&gt;网络源&lt;/a&gt;请求一个 JSON 然后进行解析。解析的代码 &lt;code&gt;parseWeatherResult&lt;/code&gt; 我们放在了 &lt;code&gt;Weather&lt;/code&gt; 中，以一个 extension 的形式存在：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;// MARK: - Parsing weather request
+extension Weather {
+    static func parseWeatherResult(dictionary: [String: AnyObject]) -&amp;gt; [Weather?]? {
+        if let weathers = dictionary[&amp;quot;weathers&amp;quot;] as? [[String: AnyObject]] {
+            return weathers.map{ Weather(json: $0) }
+        } else {
+            return nil
+        }
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;我们在 ViewController 中使用这个方法即可获取到天气信息，就可以构建我们的 UI 了。在 &lt;code&gt;ViewController.swift&lt;/code&gt; 中，加入一个属性来存储天气数据：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;var data: [Day: Weather]?
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;然后更改 &lt;code&gt;viewDidLoad&lt;/code&gt; 的代码：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;override func viewDidLoad() {
+    super.viewDidLoad()
+    // Do any additional setup after loading the view, typically from a nib.
+
+    dataSource = self
+
+    let vc = UIViewController()
+    vc.view.backgroundColor = UIColor.whiteColor()
+    setViewControllers([vc], direction: .Forward, animated: true, completion: nil)
+
+    UIApplication.sharedApplication().networkActivityIndicatorVisible = true
+
+    WeatherClient.sharedClient.requestWeathers { (weather, error) -&amp;gt; Void in
+        UIApplication.sharedApplication().networkActivityIndicatorVisible = false
+        if error == nil &amp;amp;&amp;amp; weather != nil {
+            for w in weather! where w != nil {
+                self.data[w!.day] = w
+            }
+
+            let vc = self.weatherViewControllerForDay(.Today)
+            self.setViewControllers([vc], direction: .Forward, animated: false, completion: nil)
+        } else {
+            let alert = UIAlertController(title: &amp;quot;Error&amp;quot;, message: error?.description ?? &amp;quot;Unknown Error&amp;quot;, preferredStyle: .Alert)
+            alert.addAction(UIAlertAction(title: &amp;quot;OK&amp;quot;, style: .Default, handler: nil))
+            self.presentViewController(alert, animated: true, completion: nil)
+        }
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;在这里一开始使用了一个临时的 &lt;code&gt;UIViewController&lt;/code&gt; 来作为 PageViewController 在网络请求时的初始视图控制 (虽然在我们的例子中这个初始视图就是一块白屏幕)。接下来进行网络请求，并把得到的数据存储在 &lt;code&gt;data&lt;/code&gt; 变量中以待使用。之后我们需要把这些数据传递给不同日期的 ViewController，在 &lt;code&gt;weatherViewControllerForDay&lt;/code&gt; 方法中，换为对 weather 做设定，而非 &lt;code&gt;day&lt;/code&gt;：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func weatherViewControllerForDay(day: Day) -&amp;gt; UIViewController {
+
+    let vc = self.storyboard?.instantiateViewControllerWithIdentifier(&amp;quot;WeatherViewController&amp;quot;) as! WeatherViewController
+    let nav = UINavigationController(rootViewController: vc)
+    vc.weather = data[day]
+
+    return nav
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;同时我们还需要修改一下 &lt;code&gt;WeatherViewController&lt;/code&gt;，将原来的：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;var day: Day? {
+    didSet {
+        title = day?.title
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;改为&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;var weather: Weather? {
+    didSet {
+        title = weather?.day.title
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;另外还需要在 &lt;code&gt;UIPageViewControllerDataSource&lt;/code&gt; 的两个方法中，把对应的 &lt;code&gt;viewController.day&lt;/code&gt; 换为 &lt;code&gt;viewController.weather?.day&lt;/code&gt;。最后我们要做的是在 &lt;code&gt;WeatherViewController&lt;/code&gt; 的 &lt;code&gt;viewDidLoad&lt;/code&gt; 中根据 model 更新 UI：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;override func viewDidLoad() {
+    super.viewDidLoad()
+    lowTemprature.text = &amp;quot;\(weather!.lowTemperature)℃&amp;quot;
+    highTemprature.text = &amp;quot;\(weather!.highTemperature)℃&amp;quot;
+
+    let imageName: String
+    switch weather!.state {
+    case .Sunny: imageName = &amp;quot;sunny&amp;quot;
+    case .Cloudy: imageName = &amp;quot;cloudy&amp;quot;
+    case .Rain: imageName = &amp;quot;rain&amp;quot;
+    case .Snow: imageName = &amp;quot;snow&amp;quot;
+    }
+
+    weatherImage.image = UIImage(named: imageName)
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;blockquote&gt;
+&lt;p&gt;一个可能的改进是新建一个 &lt;code&gt;WeatherViewModel&lt;/code&gt; 来将对 View 的内容和 Model 的映射关系代码从 ViewController 里分理出去，如果有兴趣的话你可以自己研究下。&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;到此我们的 iOS 端的代码就全部完成了，运行一下看看，Perfect！到现在为止的项目可以在&lt;a href=&quot;tag%20ios&quot;&gt;这里&lt;/a&gt;找到。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/step-10.png&quot; alt=&quot;step-10&quot;&gt;&lt;/p&gt;
+
+&lt;h2&gt;Watch App&lt;/h2&gt;
+
+&lt;h3&gt;UI 构建&lt;/h3&gt;
+
+&lt;p&gt;终于进入正题了，我们可以开始设计和制作 watch app 了。&lt;/p&gt;
+
+&lt;p&gt;首先我们把需要的图片添加到 watch app target 的 Assets.xcassets 中，这样在之后用户安装 app 时这些图片将被存放在手表中，我们可以直接快速地从手表本地读取。UI 的设计非常简单，在 Watch app 的 Interface.storyboard 中，我们先将代表天气状态的图片和温度标签拖拽到 InterfaceController 中，并将它们连接到 &lt;code&gt;InterfaceController.swift&lt;/code&gt; 中的 IBOutlet 去。&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;@IBOutlet var weatherImage: WKInterfaceImage!
+@IBOutlet var highTempratureLabel: WKInterfaceLabel!
+@IBOutlet var lowTempratureLabel: WKInterfaceLabel!
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;接下来，我们将它复制四次，并用 next page 的 segue 串联起来，并设置它们的 title。这样，在最后的 watch app 里我们就会有五个可以左右 scorll 滑动的页面，分别表示从前天到后天的五个日子。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/step-11.png&quot; alt=&quot;step-11&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;为了标记和区分这五个 InterfaceController 实例。因为使用 next page 级联的 WKInterfaceController 会被依次创建，所以我们可以在 &lt;code&gt;awakeWithContext&lt;/code&gt; 方法中用一个静态变量计数。在这里，我们想要将序号为 2 的 InterfaceController (也就是代表 “今天” 的那个) 设为当前 page。在 &lt;code&gt;InterfaceController.swift&lt;/code&gt; 里添加一个静态变量：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;static var index = 0
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;然后在 &lt;code&gt;awakeWithContext&lt;/code&gt; 方法中加入：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;InterfaceController.index = InterfaceController.index + 1
+if (InterfaceController.index == 2) {
+    becomeCurrentPage()
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;h3&gt;WatchKit Framework&lt;/h3&gt;
+
+&lt;p&gt;和 iOS app 类似，我们希望能够使用框架来组织代码。watch app 中的天气 model 和网络请求部分的内容其实和 iOS app 中的是完全一样的，我们没有理由重复开发。在一个 watch app 中，其实 app 本身只负责图形显示，实际的代码都是在 extension 中的。在 watchOS 2 之前，因为 extension 是在手机端，和 iOS app 处于同样的物理设备中，所以我们可以简单地将为 iOS app 中创建的框架使用在 watch extension target 中。但是在 watchOS 2 中发生了变化，因为 extension 现在直接将运行在手表上，我们无法与 iOS app 共享同一个框架了。取而代之，我们需要为手表 app 创建新的属于自己的 framewok，然后将合适的文件添加到这个 framework 中去。&lt;/p&gt;
+
+&lt;p&gt;为项目新建一个 target，类型选择为 Watch OS 的 Watch Framework。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/step-12.png&quot; alt=&quot;step-12&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;接下来，我们把之前的 &lt;code&gt;Day.swift&lt;/code&gt;，&lt;code&gt;Weather.swift&lt;/code&gt; 和 &lt;code&gt;WeatherClient.swift&lt;/code&gt; 三个文件添加到这个新的 target (在这里我们叫它 WatchWeatherWatchKit) 里去。我们将在新的这个 watch framework 中重用这三个文件。这样做相较于直接把这三个文件放到 watch extension target 中来说，会更易于管理组织和模块分割，也是 Apple 所推荐的使用方式。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/step-13.png&quot; alt=&quot;step-13&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;接下来我们需要手动在 watch extension 里将这个新的 framework 链接进来。在 &lt;code&gt;WatchWeather WatchKit Extension&lt;/code&gt; target 的 General 页面中，将 &lt;code&gt;WatchWeatherWatchKit&lt;/code&gt; 添加到 Embedded Binaries 中。Xcode 将会自动把它加到 Link Binary With Libraries 里去。这时候如果你尝试编译 watch app，可能会得到一个警告：&amp;quot;Linking against dylib not safe for use in application extensions&amp;quot;。这是因为不论是 iOS app 的 extension 还是 watchOS 的 extension，所能使用的 API 都只是完整 iOS SDK 的子集。编译器无法确定我们所动态链接的框架是否含有一些 extension 无法调用的 API。要解决这个警告，我们可以通过在 &lt;code&gt;WatchWeatherWatchKit&lt;/code&gt; 的 Build Setting 中将 &amp;quot;Require Only App-Extension-Safe API&amp;quot; 设置为 &lt;code&gt;YES&lt;/code&gt; 来将 target 里可用的 API 限制在 extension 中。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/step-14.png&quot; alt=&quot;step-14&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;是时候来实现我们的 app 了。首先一刻都不能再忍受的是 &lt;code&gt;InterfaceController.swift&lt;/code&gt; 中的 &lt;code&gt;index&lt;/code&gt;。我们既然有了 &lt;code&gt;WatchWeatherWatchKit&lt;/code&gt;，就可以利用已有的模型将这里写得更清楚。在 &lt;code&gt;InterfaceController.swift&lt;/code&gt; 中，首先在文件上面 &lt;code&gt;import WatchWeatherWatchKit&lt;/code&gt;，然后修改 &lt;code&gt;index&lt;/code&gt; 的定义，并添加一个字典来临时保存这些 Interface Controller，以便之后使用：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;static var index = Day.DayBeforeYesterday.rawValue
+static var controllers = [Day: InterfaceController]()
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;将刚才我们的在 &lt;code&gt;awakeWithContext&lt;/code&gt; 中添加的内容删掉，改为：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;override func awakeWithContext(context: AnyObject?) {
+    super.awakeWithContext(context)
+
+    // Configure interface objects here.
+    guard let day = Day(rawValue: InterfaceController.index) else {
+        return
+    }
+
+    InterfaceController.controllers[day] = self
+    InterfaceController.index = InterfaceController.index + 1
+
+    if day == .Today {
+        becomeCurrentPage()
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;现在表意就要清楚不少了。&lt;/p&gt;
+
+&lt;p&gt;接下来就是获取天气信息了。和 iOS app 中一样，我们可以直接使用 &lt;code&gt;WeatherClient&lt;/code&gt; 来获取。在 &lt;code&gt;InterfaceController.swift&lt;/code&gt; 中加入以下代码：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;var weather: Weather? {
+    didSet {
+        if let w = weather {
+            updateWeather(w)
+        }
+    }
+}
+
+func request() {
+    WeatherClient.sharedClient.requestWeathers({ [weak self] (weathers, error) -&amp;gt; Void in
+        if let weathers = weathers {
+            for weather in weathers where weather != nil {
+                guard let controller = InterfaceController.controllers[weather!.day] else {
+                    continue
+                }
+                controller.weather = weather
+            }
+        } else {
+            // 2
+            let action = WKAlertAction(title: &amp;quot;Retry&amp;quot;, style: .Default, handler: { () -&amp;gt; Void in
+                self?.request()
+            })
+            let errorMessage = (error != nil) ? error!.description : &amp;quot;Unknown Error&amp;quot;
+            self?.presentAlertControllerWithTitle(&amp;quot;Error&amp;quot;, message: errorMessage, preferredStyle: .Alert, actions: [action])
+        }
+    })
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;如果我们获取到了天气，就设置 &lt;code&gt;weather&lt;/code&gt; 属性并调用 &lt;code&gt;updateWeather&lt;/code&gt; 方法依次对相应的 InterfaceController 的 UI 进行设置。如果出现了错误，我们这里简单地用一个 watchOS 2 中新加的 alert view 来进行提示并让用户重试。在这个方法的下面加上更新 UI 的方法 &lt;code&gt;updateWeather&lt;/code&gt;：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func updateWeather(weather: Weather) {
+    lowTempratureLabel.setText(&amp;quot;\(weather.lowTemperature)℃&amp;quot;)
+    highTempratureLabel.setText(&amp;quot;\(weather.highTemperature)℃&amp;quot;)
+
+    let imageName: String
+    switch weather.state {
+    case .Sunny: imageName = &amp;quot;sunny&amp;quot;
+    case .Cloudy: imageName = &amp;quot;cloudy&amp;quot;
+    case .Rain: imageName = &amp;quot;rain&amp;quot;
+    case .Snow: imageName = &amp;quot;snow&amp;quot;
+    }
+
+    weatherImage.setImageNamed(imageName)
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;我们只需要网络请求进行一次就可以了，所以在这里我们用一个 once_token 来限定一开始的 request 只执行一次。在 &lt;code&gt;InterfaceController.swift&lt;/code&gt; 中加上一个类变量：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;static var token: dispatch_once_t = 0
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;然后在 &lt;code&gt;awakeWithContext&lt;/code&gt; 的最后用 &lt;code&gt;dispatch_once&lt;/code&gt; 来开始请求：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;dispatch_once(&amp;amp;InterfaceController.token) { () -&amp;gt; Void in
+    self.request()
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;最后，在 &lt;code&gt;willActivate&lt;/code&gt; 中也需要刷新 UI：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;override func willActivate() {
+    super.willActivate()
+    if let w = weather {
+        updateWeather(w)
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;应该就这么多了。选定手表 scheme，运行程序，除了图标的尺寸不太对以及网络请求时还显示默认的天气状况和温度以外，其他的看起来还不赖：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/step-15.png&quot; alt=&quot;step-15&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;至于显示默认值的问题，我们可以通过简单地在 StoryBoard 中将图和标签内容设为空来改善，在此就不再赘述了。&lt;/p&gt;
+
+&lt;p&gt;值得一提的是，如果你多测试几次，比如关闭整个 app (或者模拟器)，然后再运行的话，可能会有一定几率遇到下面这样的错误：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/step-16.png&quot; alt=&quot;step-16&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;如果你还记得的话，这个 1000 错误就是我们定义在 &lt;code&gt;WeatherClient.swift&lt;/code&gt; 中的 &lt;code&gt;CorruptedJSON&lt;/code&gt; 错误。调试一下，你就会发现在请求返回时得到的数据存在问题，会得到一个内容被完整复制了一遍的返回 (比如正确的数据 {a:1}，但是我们得到的是 {a:1} {a:1})。虽然我不是太明白为什么会出现这样的状况，但这应该是 &lt;code&gt;NSURLSession&lt;/code&gt; 在 watchOS SDK 上的一个缓存上的 bug。我之后会尝试向 Apple 提交一个 radar 来汇报这个问题。现在的话，我们可以通过设置不带缓存的 &lt;code&gt;NSURLSessionConfiguration&lt;/code&gt; 来绕开这个问题。将 WeatherClient 中的 &lt;code&gt;session&lt;/code&gt; 属性改为以下即可：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;let session = NSURLSession(configuration: NSURLSessionConfiguration.ephemeralSessionConfiguration())
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;至此，我们的 watch app 本体就完成了。到这一步为止的项目可以在&lt;a href=&quot;https://github.com/onevcat/WatchWeather/releases/tag/watch-app&quot;&gt;这个 tag&lt;/a&gt; 找到。Notification 和 Glance 两个特性相对简单，基本只是界面的制作，为了节省篇幅 (其实这篇文章已经够长了，如果你需要休息一下的话，这里会是一个很好地机会)，就不再详细说明了。你可以分别在&lt;a href=&quot;https://developer.apple.com/library/ios/documentation/General/Conceptual/WatchKitProgrammingGuide/ImplementingaGlance.html#//apple_ref/doc/uid/TP40014969-CH5-SW1&quot;&gt;这里&lt;/a&gt;和&lt;a href=&quot;https://developer.apple.com/library/ios/documentation/General/Conceptual/WatchKitProgrammingGuide/BasicSupport.html#//apple_ref/doc/uid/TP40014969-CH18-SW1&quot;&gt;这里&lt;/a&gt;找到开发两者所需要的一切知识。&lt;/p&gt;
+
+&lt;p&gt;在下一节中，我们将着重于 watchOS 2 的新特性。首先是 complications。&lt;/p&gt;
+
+&lt;h3&gt;Complications&lt;/h3&gt;
+
+&lt;p&gt;Complications 是 watchOS 2 新加入的特性，它是表盘上除了时间以外的一些功能性的小部件。比如我们的天气 app 里，将今天的天气状况显示在表盘上就是一个非常理想的应用场景，这样用户就不需要打开你的 app 就能看到今天的天气状况了 (其实今天的天气的话用户抬头望窗外就能知道。如果是一个实际的天气 app 的话，显示明天或者两小时后的天气状况会更理想，但是作为 demo 就先这样吧..)。我们在这一小节中将为刚才的天气 app 实现一个 complication。&lt;/p&gt;
+
+&lt;p&gt;Complications 可以是不同的形状，如图所示：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/step-17.png&quot; alt=&quot;step-17&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;根据用户表盘选择的不同，表盘上对应的可用的 complications 形状也各不相同。如果你想要你的 complication 在所有表盘上都能使用的话，你需要实现所有的形状。掌管 complications 或者说是表盘相关的框架并不是我们一直使用的 WatchKit，而是一个 watchOS 2 中全新框架，ClockKit。ClockKit 会提供一些模板给我们，并在一定时间点向我们请求数据。我们依照模板使用我们的数据来实现 complication，最后 ClockKit 负责帮助我们将其渲染在表盘上。在 ClockKit 请求数据时，它会唤醒我们的 watch extension。我们需要在 extension 中实现数据源，并以一段时间线的方式把数据提供给 ClockKit。这样做有两个好处，首先 ClockKit 可以一次性获取到很多数据，这样它就能在合适的时候更新 complication 的显示，而不必再次唤醒 extension 来请求数据。其次，因为有一条时间线的数据，我们就可以使用 Time Travel 来查看 complication 已经过去的和即将到来的状况，这在某些场合下会十分方便。&lt;/p&gt;
+
+&lt;p&gt;理论已经说了很多了，来实际操作一下吧。&lt;/p&gt;
+
+&lt;p&gt;首先，因为我们在新建项目的时候已经选择了包含 complications，所以我们并不需要再进行额外的配置就可以开始了。如果你不小心没有选中这个选项，或者是想在已有项目中进行添加的话，你就需要手动配置，在 extension 的 target 里的 Complications Configuration 中指定数据源的 class 和支持的形状。在运行时，系统会使用在这个设置中指定的类型名字去初始化一个的实例，然后调用这个实例中实现的数据源方法。我们要做的就是在被询问这些方法时，尽快地提供需要的数据。&lt;/p&gt;
+
+&lt;p&gt;第一步是实现数据源，这在在我们的项目中已经配置好了，就是 &lt;code&gt;ComplicationController.swift&lt;/code&gt;。这是一个实现了 &lt;code&gt;CLKComplicationDataSource&lt;/code&gt; 的类型，打开文件可以看到所有的方法都已经有默认空实现了，我们现在要做的就是把这些空填上。其中最关键的是 &lt;code&gt;getCurrentTimelineEntryForComplication:withHandler:&lt;/code&gt;，我们需要通过这个方法来提供当前表盘所要显示的 complication。罗马不是一天建成的，项目也不是。我们先提供一个 dummy 的数据来让流程运作起来。在 ComplicationController.swift 中，将这个方法的内容换成：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func getCurrentTimelineEntryForComplication(complication: CLKComplication, withHandler handler: ((CLKComplicationTimelineEntry?) -&amp;gt; Void)) {
+    // Call the handler with the current timeline entry
+    var entry : CLKComplicationTimelineEntry?
+    let now = NSDate()
+
+    // Create the template and timeline entry.
+    if complication.family == .ModularSmall {
+
+        let imageTemplate = CLKComplicationTemplateModularSmallSimpleImage()
+        imageTemplate.imageProvider = CLKImageProvider(backgroundImage:UIImage(named: &amp;quot;sunny&amp;quot;)!, backgroundColor: nil)
+
+        // Create the entry.
+        entry = CLKComplicationTimelineEntry(date: now, complicationTemplate: imageTemplate)
+    }
+    else {
+        // ...configure entries for other complication families.
+    }
+
+    // Pass the timeline entry back to ClockKit.
+    handler(entry)
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;在这个方法中，系统会提供给我们所需要的 complication 的类型，我们要做的是使用合适的系统所提供的模板 (这里是 &lt;code&gt;CLKComplicationTemplateModularSmallSimpleImage&lt;/code&gt;) 以及我们自己的数据，来构建一个 &lt;code&gt;CLKComplicationTimelineEntry&lt;/code&gt; 对象，然后再 handler 中返回给系统。结合天气 app 的特点，我们这里选择了一个小的简单图片的模板。另外因为篇幅有限，这里只实现了 &lt;code&gt;.ModularSmall&lt;/code&gt;。在实际的项目中，你应该支持尽量多的 complication 类型，这样可以保证你的用户在不同的表盘上都能使用。&lt;/p&gt;
+
+&lt;p&gt;在提供具体的数据时，我们使用 template 的 &lt;code&gt;imageProvider&lt;/code&gt; 或者 &lt;code&gt;textProvider&lt;/code&gt;。在我们现在使用的这个模板中，只有一个简单的 &lt;code&gt;imageProvider&lt;/code&gt;，我们从 extension 的 Assets Category 中获取并设置合适的图像就可以了 (对于 &lt;code&gt;.ModularSmall&lt;/code&gt; 来说，需要图像的尺寸为 52px 和 58px 的 @2x。关于其他模板的图像尺寸要求，可以参考&lt;a href=&quot;https://developer.apple.com/library/prerelease/watchos/documentation/ClockKit/Reference/ClockKit_framework/index.html#//apple_ref/doc/uid/TP40016082&quot;&gt;文档&lt;/a&gt;)。&lt;/p&gt;
+
+&lt;p&gt;运行程序，选取一个带有 &lt;code&gt;ModularSmall&lt;/code&gt; complication 的表盘 (如果是在模拟器的话，可以使用 Shift+Cmd+2 然后点击表盘来打开表盘选择界面)，然后在 complication 中选择 WatchWeather，可以看到以下的结果：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/step-18.png&quot; alt=&quot;step-18&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;看起来不错，我们的小太阳已经在界面上熠熠生辉了，接下来就是要实现把实际的数据替换进来。对于 complication 来说，我们需要以尽可能快的速度去调用 handler 来向系统提供数据。我们并没有那么多时间去从网络上获取数据，所以需要使用之前在 watch app 或者是 iOS app 中获取到的数据来组织 complication。为了在 complication 中能直接获取数据，我们需要在用 Client 获取到数据后把它存在本地。这里我们用 UserDefaults 就已经足够了。在 &lt;code&gt;Weather.swift&lt;/code&gt; 中加入以下 extension：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;public extension Weather {
+    static func storeWeathersResult(dictionary: [String: AnyObject]) {
+        let userDefault = NSUserDefaults.standardUserDefaults()
+        userDefault.setObject(dictionary, forKey: kWeatherResultsKey)
+        userDefault.setObject(NSDate(), forKey: kWeatherRequestDateKey)
+
+        userDefault.synchronize()
+    }
+
+    public static func storedWeathers() -&amp;gt; (requestDate: NSDate?, weathers: [Weather?]?) {
+        let userDefault = NSUserDefaults.standardUserDefaults()
+        let date = userDefault.objectForKey(kWeatherRequestDateKey) as? NSDate
+
+        let weathers: [Weather?]?
+        if let dic = userDefault.objectForKey(kWeatherResultsKey) as? [String: AnyObject] {
+            weathers = parseWeatherResult(dic)
+        } else {
+            weathers = nil
+        }
+
+        return (date, weathers)
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;这里我们需要知道获取到这组数据时的时间，我们以当前时间作为获取时间进行存储。一个更加合适的做法应该是在请求的返回中包含每个天气状况所对应的时间信息。但是因为我们并没有真正的服务器，也并非实际的请求，所以这里就先简单粗暴地用本地时间了。接下来，在每次请求成功后，我们调用 &lt;code&gt;storeWeathersResult&lt;/code&gt; 将结果存储起来。在 &lt;code&gt;WeatherClient.swift&lt;/code&gt; 中，把&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;dispatch_async(dispatch_get_main_queue(), { () -&amp;gt; Void in
+    handler?(weathers: Weather.parseWeatherResult(dictionary), error: nil)
+})
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;这段代码改为：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;dispatch_async(dispatch_get_main_queue(), { () -&amp;gt; Void in
+    let weathers = Weather.parseWeatherResult(dictionary)
+    if weathers != nil {
+        Weather.storeWeathersResult(dictionary)
+    }
+    handler?(weathers: weathers, error: nil)
+})
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;接下来我们还需要另外一项准备工作。Complication 的时间线是以一组 &lt;code&gt;CLKComplicationTimelineEntry&lt;/code&gt; 来表示的，一个 entry 中包含了 template 和对应的 &lt;code&gt;NSDate&lt;/code&gt;。watchOS 将在当前时间超过这个 &lt;code&gt;NSDate&lt;/code&gt; 时表示。所以如果我们需要显示当天的天气情况的话，就需要将对应的日期设定为当日的 0 点 0 分。对于其他几个日期的天气来说，这个状况也是一样的。我们需要添加一个方法来通过 Weather 的 &lt;code&gt;day&lt;/code&gt; 属性和请求的当日日期来返回一个对应 entry 中需要的日期。为了运算简便，我们这里引入一个第三方框架，&lt;a href=&quot;https://github.com/malcommac/SwiftDate&quot;&gt;SwiftDate&lt;/a&gt;。将这个项目导入我们 app，然后在 &lt;code&gt;Weather.swift&lt;/code&gt; 中添加：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;public extension Weather {
+    public func dateByDayWithRequestDate(requestDate: NSDate) -&amp;gt; NSDate {
+        let dayOffset = day.rawValue
+        let date = requestDate.set(componentsDict: [&amp;quot;hour&amp;quot;:0, &amp;quot;minute&amp;quot;:0, &amp;quot;second&amp;quot;:0])!
+        return date + dayOffset.day
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;接下来我们就可以更新 &lt;code&gt;ComplicationController.swift&lt;/code&gt; 的内容了。首先我们需要实现 &lt;code&gt;getTimelineStartDateForComplication:withHandler:&lt;/code&gt; 和 &lt;code&gt;getTimelineEndDateForComplication:withHandler:&lt;/code&gt; 来告诉系统我们所能提供 complication 的日期区间：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func getTimelineStartDateForComplication(complication: CLKComplication, withHandler handler: (NSDate?) -&amp;gt; Void) {
+    var date: NSDate? = nil
+    let (reqestDate, weathers) = Weather.storedWeathers()
+
+    if let weathers = weathers,
+         requestDate = requestDate {
+        for w in weathers where w != nil {
+            if w!.day == .DayBeforeYesterday {
+                date = w!.dateByDayWithRequestDate(requestDate)
+                break
+            }
+        }
+    }
+
+    handler(date)
+}
+
+func getTimelineEndDateForComplication(complication: CLKComplication, withHandler handler: (NSDate?) -&amp;gt; Void) {
+    var date: NSDate? = nil
+    let (reqestDate, weathers) = Weather.storedWeathers()
+
+    if let weathers = weathers,
+        requestDate = requestDate {
+            for w in weathers where w != nil {
+                if w!.day == .DayAfterTomorrow {
+                    date = w!.dateByDayWithRequestDate(requestDate) + 1.day - 1.second
+                    break
+                }
+            }
+    }
+
+    handler(date)
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;最早的时间是前天的 00:00，这是毫无疑问的。但是最晚的可显示时间并不是后天的 00:00，而是 23:59:59，这里一定需要注意。&lt;/p&gt;
+
+&lt;p&gt;另外，为了之后创建 template 能容易一些，我们添加一个由 &lt;code&gt;Weather.State&lt;/code&gt; 创建 template 的方法：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;private func templateForComplication(complication: CLKComplication, weatherState: Weather.State) -&amp;gt; CLKComplicationTemplate? {
+    let imageTemplate: CLKComplicationTemplate?
+
+    if complication.family == .ModularSmall {
+        imageTemplate = CLKComplicationTemplateModularSmallSimpleImage()
+
+        let imageName: String
+        switch weatherState {
+        case .Sunny: imageName = &amp;quot;sunny&amp;quot;
+        case .Cloudy: imageName = &amp;quot;cloudy&amp;quot;
+        case .Rain: imageName = &amp;quot;rain&amp;quot;
+        case .Snow: imageName = &amp;quot;snow&amp;quot;
+        }
+
+        (imageTemplate as! CLKComplicationTemplateModularSmallSimpleImage).imageProvider = CLKImageProvider(backgroundImage:UIImage(named: imageName)!, backgroundColor: nil)
+    } else {
+        imageTemplate = nil
+    }
+
+    return imageTemplate
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;接下来就是实现核心的三个提供时间轴的方法了，虽然很长，但是做的事情却差不多：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func getCurrentTimelineEntryForComplication(complication: CLKComplication, withHandler handler: ((CLKComplicationTimelineEntry?) -&amp;gt; Void)) {
+    // Call the handler with the current timeline entry
+    var entry : CLKComplicationTimelineEntry?
+
+    // Create the template and timeline entry.
+    let (requestDate, weathers) = Weather.storedWeathers()
+
+    if let weathers = weathers,
+        requestDate = requestDate {
+            for w in weathers where w != nil {
+
+                let weatherDate = w!.dateByDayWithRequestDate(requestDate)
+                if weatherDate == NSDate.today() {
+
+                    if let template = templateForComplication(complication, weatherState: w!.state) {
+                        entry = CLKComplicationTimelineEntry(date: weatherDate, complicationTemplate: template)
+                    }
+                }
+            }
+    }
+
+    // Pass the timeline entry back to ClockKit.
+    handler(entry)
+}
+
+func getTimelineEntriesForComplication(complication: CLKComplication, beforeDate date: NSDate, limit: Int, withHandler handler: (([CLKComplicationTimelineEntry]?) -&amp;gt; Void)) {
+    // Call the handler with the timeline entries prior to the given date
+    var entries = [CLKComplicationTimelineEntry]()
+    let (requestDate, weathers) = Weather.storedWeathers()
+
+    if let weathers = weathers,
+        requestDate = requestDate {
+            for w in weathers where w != nil {
+                let weatherDate = w!.dateByDayWithRequestDate(requestDate)
+                if weatherDate &amp;lt; date {
+                    if let template = templateForComplication(complication, weatherState: w!.state) {
+                        let entry = CLKComplicationTimelineEntry(date: weatherDate, complicationTemplate: template)
+                        entries.append(entry)
+
+                        if entries.count == limit {
+                            break
+                        }
+                    }
+                }
+            }
+    }
+
+    handler(entries)
+}
+
+func getTimelineEntriesForComplication(complication: CLKComplication, afterDate date: NSDate, limit: Int, withHandler handler: (([CLKComplicationTimelineEntry]?) -&amp;gt; Void)) {
+    // Call the handler with the timeline entries after to the given date
+    var entries = [CLKComplicationTimelineEntry]()
+    let (requestDate, weathers) = Weather.storedWeathers()
+
+    if let weathers = weathers,
+        requestDate = requestDate {
+            for w in weathers where w != nil {
+                let weatherDate = w!.dateByDayWithRequestDate(requestDate)
+                if weatherDate &amp;gt; date {
+                    if let template = templateForComplication(complication, weatherState: w!.state) {
+                        let entry = CLKComplicationTimelineEntry(date: weatherDate, complicationTemplate: template)
+                        entries.append(entry)
+
+                        if entries.count == limit {
+                            break
+                        }
+                    }
+                }
+            }
+    }
+
+    handler(entries)
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;代码来说非常简单。&lt;code&gt;getCurrentTimelineEntryForComplication&lt;/code&gt; 中我们找到今天的 &lt;code&gt;Weather&lt;/code&gt; 对象，然后构建合适的 entry。而对于 &lt;code&gt;beforeDate&lt;/code&gt; 和 &lt;code&gt;afterDate&lt;/code&gt; 两个版本的方法，按照系统提供的 &lt;code&gt;date&lt;/code&gt; 我们需要组织在这个 &lt;code&gt;date&lt;/code&gt; 之前或者之后的所有 entry，并将它们放到一个数组中去调用回调。这两个方法中还为我们提供了一个 &lt;code&gt;limit&lt;/code&gt; 参数，我们的结果数应该不超过这个数字。在实现这三个方法后，我们的时间线就算是构建完毕了。&lt;/p&gt;
+
+&lt;p&gt;另外，我们还可以通过实现 &lt;code&gt;getPlaceholderTemplateForComplication:withHandler:&lt;/code&gt; 来提供一个在表盘定制界面是会用到的占位图像。&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func getPlaceholderTemplateForComplication(complication: CLKComplication, withHandler handler: (CLKComplicationTemplate?) -&amp;gt; Void) {
+    // This method will be called once per supported complication, and the results will be cached
+    handler(templateForComplication(complication, weatherState: .Sunny))
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;这样，在自定义表盘界面我们也可以在选择到我们的 complication 时看到表示我们的 complication 的样式了：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/step-19.png&quot; alt=&quot;step-19&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;code&gt;ComplicationController&lt;/code&gt; 中最后需要实现的是 &lt;code&gt;getNextRequestedUpdateDateWithHandler&lt;/code&gt;。系统会在你的 watch app 被运行时更新时间线，另外要是你的 app 一直没有被运行的话，你可以通过这个方法提供给系统一个参考时间，用来建议系统应该在什么时候为你更新时间线。这个时间应该尽可能长，以节省电池的电量。在我们的天气的例子中，每天一次更新也许会是个不错的选择：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;func getNextRequestedUpdateDateWithHandler(handler: (NSDate?) -&amp;gt; Void) {
+    // Call the handler with the date when you would next like to be given the opportunity to update your complication content
+    handler(NSDate.tomorrow());
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;blockquote&gt;
+&lt;p&gt;你也许会注意到，因为我们这里要是不开启 watch app 的话，其实天气数据时不会更新的，这样我们设定刷新时间线似乎并没有什么意义 - 因为不开 watch app 的话数据并不会变化，而开了 watch app 的话时间线就会直接被刷新。这里我们考虑到了之后使用 Watch Connectivity 从手机端刷新 watch 数据的可能性，所以做了每天刷新一次的设置。我们在稍后会详细将这方面内容。&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;另外，我们还需要记得在 watch app 数据更新之后，强制 reload 一下 complication 的数据。在 ComplicationController.swift 中加入：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;static func reloadComplications() {
+    let server = CLKComplicationServer.sharedInstance()
+    for complication in server.activeComplications {
+        server.reloadTimelineForComplication(complication)
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;然后在 &lt;code&gt;InterfaceController.swift&lt;/code&gt; 的 &lt;code&gt;request&lt;/code&gt; 中，在请求成功返回后调用一下这个方法就可以了。&lt;/p&gt;
+
+&lt;p&gt;现在，我们的 watch app 已经支持 complication 了。同时，因为我们努力提供了之前和之后的数据，我们免费得到了 Time Travel 的支持。现在你不仅可以在表盘上看到今天的天气，通过旋转 Digital Crown 你还能了解到之前和之后的天气状况了：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/step-20.gif&quot; alt=&quot;step-20&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;到这里为止的项目代码可以在 &lt;a href=&quot;https://github.com/onevcat/WatchWeather/releases/tag/complication&quot;&gt;complication tag&lt;/a&gt; 中找到。&lt;/p&gt;
+
+&lt;h3&gt;Watch Connectivity&lt;/h3&gt;
+
+&lt;p&gt;在 watchOS 1 时代，watch 的 extension 是和 iOS app 一样，存在于手机里的。所以在 watch extension 和 iOS app 之间共享数据是比较简单的，和其他 extension 类似，使用 app group 将 app 本体和 extension 设为同一组 app，就可以在一个共享容器中共享数据了。但是这在 watchOS 2 中发生了改变。因为 watchOS 2 的手表 extension 是直接存在于手表中的，所以之前的 app group 的方法对于 watch app 来说已经失效。Watch extension 现在会使用自己的一套数据存储 (如果你之前注意到了的话，我们在请求数据后将它存到了 UserDefaults 中，但是手机和手表的 UserDefaults 是不同的，所以我们不用担心数据被不小心覆盖)。如果我们想要在 iOS 设备和手表之间共享数据的话，我们需要使用新的 Watch Connectivity 框架。&lt;/p&gt;
+
+&lt;p&gt;&lt;code&gt;WatchConnectivity&lt;/code&gt; 框架所扮演的角色就是 iOS app 和 watch extension 之间的桥梁，利用这个框架你可以在两者之间互相传递数据。在这个例子中，我们会用 &lt;code&gt;WatchConnectivity&lt;/code&gt; 来改善我们的天气 app 的表现 -- 我们打算实现无论在手表还是 iOS app 中，每天最多只进行一次请求。在一个设备上请求后，我们会把数据传递到配对的另一个设备上，这样在另一个设备上打开 app 时，就可以直接显示天气状况，而不再需要请求一次了。&lt;/p&gt;
+
+&lt;p&gt;我们在 iOS app 和 watchOS app 中都可以使用 WatchConnectivity。首先我们需要检查设备上是否能使用 session，因为在一部分设备 (比如 iPad) 上，这个框架是不能使用的。这可以通过 &lt;code&gt;WCSession.isSupported()&lt;/code&gt; 来判断。在确认平台上可以使用后，我们可以设定 delegate 来监听事件，然后开始这个 session。当我们有一个已经启动的 session 后，就可以通过框架的方法来向配对的另一个设备发送数据了。&lt;/p&gt;
+
+&lt;p&gt;大致来说数据发送分为后台发送和即时消息两类。当 iOS app 和 watch app 都在前台的时候，我们可以通过 &lt;code&gt;-sendMessage:replyHandler:errorHandler:&lt;/code&gt; 来在两者之间发送消息，这在 iOS app 和 watch app 之间需要互动的时候是非常有用的。另一种是后台发送，在 iOS 或 watch app 中有一者不在前台时，我们就需要考虑使用这种方式。后台通讯有三种方式：通过 Application Context，通过 User Info，以及传送文件。文件传送简单明了就是传递一个文件，另外两个都是传递一个字典，不同之处在于 Application Context 将会使用新的数据覆盖原来的内容，而 User Info 则可以使多次内容形成队列进行传送。每种方式都会在另外一方的 session 开始运行后调用相应的 delegate 方法，于是我们就能知道有数据发送过来了。&lt;/p&gt;
+
+&lt;p&gt;结合天气 app 的特点，我们应该选择使用 Application Context 来收发数据。这篇文章已经太长了，所以我们这里只做从 iOS 到 watchOS 的发送了。因为反过来的代码其实完全一样，我会在 repo 中完成，在这里就不再重复一遍了。&lt;/p&gt;
+
+&lt;p&gt;首先是在 iOS app 中启动 session。在 &lt;code&gt;ViewController.swift&lt;/code&gt; 中添加一个属性：&lt;code&gt;var session: WCSession?&lt;/code&gt;，然后在 &lt;code&gt;viewDidLoad:&lt;/code&gt; 中添加：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;if WCSession.isSupported() {
+    session = WCSession.defaultSession()
+    session!.delegate = self
+    session!.activateSession()
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;为了让 &lt;code&gt;self&lt;/code&gt; 成为 session 的 delegate，我们需要声明 &lt;code&gt;ViewController&lt;/code&gt; 实现 &lt;code&gt;WCSessionDelegate&lt;/code&gt;。这里我们先在文件最后添加一个空的 extension 即可：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;extension ViewController: WCSessionDelegate {
+
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;注意我们一定需要设定 session 的 delegate，即使它什么都没有做。一个没有 delegate 的 session 是不能被启动或正确使用的。&lt;/p&gt;
+
+&lt;p&gt;然后就是发送数据了。在 &lt;code&gt;requestWeathers&lt;/code&gt; 的回调中，数据请求一切正常的分支最后，添加一段&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;if error == nil &amp;amp;&amp;amp; weather != nil {
+    //...
+    if let dic = Weather.storedWeathersDictionary() {
+        do {
+            try self.session?.updateApplicationContext(dic)
+        } catch _ {
+
+        }
+    }
+} else {
+    ...
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;这里的 &lt;code&gt;storedWeathersDictionary&lt;/code&gt; 是个新加入的方法，它返回存储在 User Defaults 中的内容的字典表现形式 (我们在请求返回的时候就已经将结果内容存储在 User Defaults 里了，希望你还记得)。&lt;/p&gt;
+
+&lt;p&gt;在 watchOS app 一侧，我们类似地启动一个 session。在 &lt;code&gt;InterfaceController.swift&lt;/code&gt; 的 &lt;code&gt;awakeWithContext&lt;/code&gt; 中的 &lt;code&gt;dispatch_once&lt;/code&gt; 里，添加&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;if WCSession.isSupported() {
+    InterfaceController.session = WCSession.defaultSession()
+    InterfaceController.session!.delegate = self
+    InterfaceController.session!.activateSession()
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;然后添加一个 extension 来接收传输过来的数据：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;extension InterfaceController: WCSessionDelegate {
+    func session(session: WCSession, didReceiveApplicationContext applicationContext: [String : AnyObject]) {
+        guard let dictionary = applicationContext[kWeatherResultsKey] as? [String: AnyObject] else {
+            return
+        }
+        guard let date = applicationContext[kWeatherRequestDateKey] as? NSDate else {
+            return
+        }
+        Weather.storeWeathersResult(dictionary, requestDate: date)
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;最后，在请求数据之前我们可以判断一下已经存储在 User Defaults 中的内容是否是今天请求的。如果是的话，就不再需要进行请求，而是直接使用存储的内容来刷新界面，否则的话进行请求并存储。将原来的 &lt;code&gt;self.request()&lt;/code&gt; 改为：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;dispatch_async(dispatch_get_main_queue()) { () -&amp;gt; Void in
+    if self.shouldRequest() {
+        self.request()
+    } else {
+        let (_, weathers) = Weather.storedWeathers()
+        if let weathers = weathers {
+            self.updateWeathers(weathers)
+        }
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;如果你只是单纯地 copy 这些代码的话，在之前项目的基础上应该是不能编译的。这是因为在这里我并没有列举出所有的改动，而只是写出了关于 WatchConnectivity 的相关内容。这里涉及到了每次启动或者从后台切换到 app 时都需要检测并刷新界面，所以我们还需要一些额外的重构来达到这个目的。这些内容我们在此也略过了。同理，在 watchOS app 需要请求，并且请求结束的时候，我们也可以如前所述，通过几乎一样的代码和方式将请求得到的内容发回给 iOS app。这样，当我们打开 iOS app 时，也就不需要再次进行网络请求了。&lt;/p&gt;
+
+&lt;p&gt;这部分的完整的代码可以在这个 repo 的&lt;a href=&quot;https://github.com/onevcat/WatchWeather/releases/tag/connectivity&quot;&gt;最终的 tag&lt;/a&gt; 上找到，您可以尝试自己实现一下，也可以直接找这里的代码进行参考。如果后续还有修正的话，我会直接在 master 上进行。&lt;/p&gt;
+
+&lt;h2&gt;总结&lt;/h2&gt;
+
+&lt;p&gt;本文从零开始完成了一个 iOS 和 Apple Watch 上的天气情况的 app。虽然说数据源上用的是一个 stub，但是在其他方面还算是比较完整的。本来主要的目的是探索下 watchOS 2 中的几个新 API 的用法，主要是 complication 和 WatchConnectivity。但是发现如果只是单纯地照搬文档的话一是不够直观，二是很难说明问题，所以干脆不如从头开始，和大家一起完成一个 app 来的更实在。&lt;/p&gt;
+
+&lt;p&gt;Apple Watch 作为 Apple 的新产品线，其实所扮演的角色会非常重要。watchOS 一代由于种种限制，开发者们很难发挥出设备的优势来做出一些有意思的 app。在一代系统中，手表更多地还是只是一块 iPhone 的额外屏幕。但是在 watchOS 2 中，这一状况有望改善。更加合理和灵活的 app 组织方式以及在手表上的 native 开发，使得 Apple Watch 的可用范围提升了不止一个档次。而在经历了大半年的彷徨之后，Apple Watch 开发也逐渐趋于稳定，系统的架构和 API 也逐渐合理。其实 Apple Watch 还是一款非常有希望的产品，相信随着设备的进一步成熟和 SDK 的更加开放，我们会有机会像是直接利用 Digital Crown 或者其他一个手表特性来开发令人耳目一新的 app。个人的对于 Apple Watch 开发的建议是，现在最好能紧跟上 watch 开发的脚步，尽量进行积累，这样你才有可能在之后的爆发中取得先机和灵感。&lt;/p&gt;
+
+&lt;p&gt;就这么多吧 (其实已经很多了)，祝编程愉快~&lt;/p&gt;
+</description>
+        <pubDate>Mon, 03 Aug 2015 22:23:34 +0800</pubDate>
+        <link>http://vno.onevcat.com/2015/08/watchos2/</link>
+        <guid isPermaLink="true">http://vno.onevcat.com/2015/08/watchos2/</guid>
+        
+        <category>能工巧匠集</category>
+        
+        
+      </item>
+    
+      <item>
+        <title>WWDC15 Session笔记 - iOS 9 多任务分屏要点</title>
+        <description>&lt;p&gt;本文是我的 &lt;a href=&quot;http://onevcat.com/2015/06/ios9-sdk/&quot;&gt;WWDC15 笔记&lt;/a&gt;中的一篇，涉及的 Session 有&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;&lt;a href=&quot;https://developer.apple.com/videos/wwdc/2015/?id=205&quot;&gt;Getting Started with Multitasking on iPad in iOS 9&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&quot;https://developer.apple.com/videos/wwdc/2015/?id=211&quot;&gt;Multitasking Essentials for Media-Based Apps on iPad in iOS 9&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href=&quot;https://developer.apple.com/videos/wwdc/2015/?id=212&quot;&gt;Optimizing Your App for Multitasking on iPad in iOS 9&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h3&gt;iOS 9 多任务综述&lt;/h3&gt;
+
+&lt;p&gt;iOS 9 中最引人注目的新特性就是多任务了，在很久以前的越狱开发里就已经出现过类似的插件，而像是 Windows Surface 系列上也已经有分屏多任务的特性，可以让用户同时使用两个或多个 app。iOS 9 中也新加入类似的特性。iOS 9 中的多任务有三种表现形式，临时出现和交互的滑动覆盖 (Slide Over)，真正的分屏同时操作两个 app 的分割视图 (Split View)，以及在其他 app 里依然可以进行视频播放的画中画 (Picture in Picture) 模式。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/multitasking-1.jpg&quot; alt=&quot;&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;在关于多任务的文档中，Apple 明确指出：&lt;/p&gt;
+
+&lt;blockquote&gt;
+&lt;p&gt;绝大部分 app 都应当适配 Slide Over 和 Split View&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;因为这正是 iOS 9 的核心功能之一，也是你的用户所期望看到的。另一方面，支持多任务也增加了你的用户打开和使用你的 app 的可能。不过多任务有一点限制，那就是在能够安装 iOS 9 的 iPad 设备上，仅只有性能最强大的 iPad Air 2 和之后的机型支持分割视图模式，而其他像是 iPad mini 2，iPad mini 3 以及 iPad Air 只支持滑动覆盖和画中画两种模式。这在一定程度上应该还是基于移动设备资源和性能限制的考虑做出的决策，毕竟要保证良好的使用体验为前提，多任务才会有意义。&lt;/p&gt;
+
+&lt;p&gt;对于开发者来说，虽然多种布局看起来很复杂，但是实际上如果紧跟 Apple 的技术步伐的话，将自己的 iPad app 进行多任务适配并不会是一件非常困难的事情。因为滑动覆盖模式和分割视图模式所采用的布局其实就是 Compact Width 的布局，而这一概念就是 WWDC14 上引入的基于屏幕特征的 UI 布局方式。如果你已经在使用这套布局方式了的话，那么可以说多任务视图的支持也就顺带自动完成了。不过如果你完全没有使用过甚至没有听说过这套布局方法的话，我去年的&lt;a href=&quot;http://onevcat.com/2014/07/ios-ui-unique/&quot;&gt;一篇笔记&lt;/a&gt;可能能帮你对此有初步了解，在下一节里我也会稍微再稍微复习一下相关概念和基本用法。&lt;/p&gt;
+
+&lt;h3&gt;Adaptive UI 复习&lt;/h3&gt;
+
+&lt;p&gt;Adaptive UI 是 Apple 在 iOS 8 提出的概念。在此之前，我们如果想要同时为 iPhone 和 iPad 开发 app 的话，很可能会写很多设备判断的代码，比如这样：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swifts&quot; data-lang=&quot;swifts&quot;&gt;if UI_USER_INTERFACE_IDIOM() == .Pad {
+    // 设备是 iPad
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;除此之外，如果我们想要同时适配横向和纵向的话，我们会需要类似这样的代码：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-swift&quot; data-lang=&quot;swift&quot;&gt;if UIInterfaceOrientationIsPortrait(orientation) {
+    // 屏幕是竖屏
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;这些判断和分支不仅难写难读，也使适配开发困难重重。从 iOS 8 之后，开发者不应该再依赖这样设备向来进行 UI 适配，而应该转而使用新的 Size Class 体系。Apple 将自家的移动设备按照尺寸区别，将纵横两个方向设计了 Regular 和 Compact 的组合。比如 iPhone 在竖屏时宽度是 Compact，高度是 Regular，横屏时 iPhone 6 Plus 宽度是 Regular，高度是 Compact，而其他 iPhone 在横屏时高度和宽度都是 Compact；iPad 不论型号和方向，宽度及高度都是 Regular。现有的设备的 Size Class 如下图所示：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/multitasking-2.jpg&quot; alt=&quot;&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;针对 Size Class 进行开发的思想下，我们不再关心具体设备的型号或者尺寸，而是根据特定的 Size Class 的特性来展示内容。在 Regular 的宽度下，我们可以在水平方向上展示更多的内容，比如同时显示 Master 和 Detail View Controller 等。同样地，我们也不应该再关心设备旋转的问题，而是转而关心 Size Class 的变化。在开发时，如果是使用 Interface Builder 的话，在制作 UI 时就注意为不同的 Size Class 配置合适的约束和布局，在大多数情况下就已经足够了。如果使用代码的话，&lt;code&gt;UITraitCollection&lt;/code&gt; 类将是使用和操作 Size Class 的关键。我们可以根据当前工作的 &lt;code&gt;UIViewController&lt;/code&gt; 的 &lt;code&gt;traitCollection&lt;/code&gt; 属性来设置合适的布局，并且在 &lt;code&gt;
+-willTransitionToTraitCollection:withTransitionCoordinator:&lt;/code&gt; 和 &lt;code&gt;
+-viewWillTransitionToSize:withTransitionCoordinator:&lt;/code&gt; 被调用时对 UI 布局做出正确的响应。&lt;/p&gt;
+
+&lt;p&gt;虽然并不是理论上不可行，但是使用纯手写来操作 Size Class 会是一件异常痛苦的事情，我们还是应该尽可能地使用 IB 来减少这部分的工作量，加快开发效率。&lt;/p&gt;
+
+&lt;h3&gt;iPad 中的多任务适配&lt;/h3&gt;
+
+&lt;p&gt;对于 iOS 9 中的多任务，滑动覆盖和分割视图的初始位置，新打开的 app 的尺寸都将是设备尺寸的 1/3。不过这个比例并不重要，我们需要记住的是新打开的 app 将运行在 Compact Width 和 Regular Height 的 Size Class 下。也就是说，如果你的 iPad app 使用了 Size Class 进行布局，并且是支持 iPhone 竖屏的，那么恭喜，你只需要换到 iOS 9 SDK 并且重新编译你的 app，就搞定了。&lt;/p&gt;
+
+&lt;p&gt;因为本文的重点不是教你怎么开发一个 Adaptive UI 的 app，所以并不打算在这方面深入下去。如果你在去年缺了课，不是很了解这方面的话，&lt;a href=&quot;http://www.raywenderlich.com/83276/beginning-adaptive-layout-tutorial&quot;&gt;这篇教程&lt;/a&gt;可能可以帮你快速了解并掌握这些内容。如果你想要直接上手看看 iOS 9 中的 多任务是如何工作的话，可以新建一个 Master-Detail Application，并将其安装到 iPad 模拟器上。Master-Detail 的模板工程为我们搭设了一个很好的适配 Size Class 的框架，让项目可以在任何设备上都表现良好。同样你也可以观察它在 iOS 9 的 iPad 上的表现。&lt;/p&gt;
+
+&lt;p&gt;但是其实并不是所有的 app 都应该适配多任务，比如一个需要全屏才能体验的游戏就是典型。如果你不想你的 app 可以作为多任务的副 app 被使用的话，你可以在 Info.plist 中添加 &lt;code&gt;UIRequiresFullScreen&lt;/code&gt; 并将其设为 &lt;code&gt;true&lt;/code&gt;。&lt;/p&gt;
+
+&lt;p&gt;Easy enough？没错，要适配 iPad 的多任务，你需要做的就只有按照标准流程开发一个全平台通用 app，仅此而已。&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;使用 iOS 9 SDK 构建你的 app；&lt;/li&gt;
+&lt;li&gt;支持所有的方向和对应的 Size Class；&lt;/li&gt;
+&lt;li&gt;使用 launch storyboard 作为 app 启动页面。&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;虽说没太多特别值得一提的内容，但是也还是有一些需要注意的小细节。&lt;/p&gt;
+
+&lt;h3&gt;一些值得注意的小细节&lt;/h3&gt;
+
+&lt;p&gt;在以前是不存在 app 在前台还要和别的 app 共享屏幕这种事情的，所以 &lt;code&gt;UIScreen.bounds&lt;/code&gt; 和主窗口的 &lt;code&gt;UIWindow.bounds&lt;/code&gt; 使用上来说基本是同义词。但是在多任务时代，&lt;code&gt;UIWindow&lt;/code&gt; 就有可能只有 1/3 或者 1/2 屏幕大小了。如果你在之前的 app 中有使用它来定义你的视图的话，就有必要为多任务做特殊的处理了。不过虽然滑动覆盖和分割视图都是在右侧展示，但是它们的 Window 的 origin 依然是 (0, 0)，这也方便了我们定义视图。&lt;/p&gt;
+
+&lt;p&gt;第二个细节是现在 iPad UI 的 Size Class 是会发生变化的。以前不论是竖直还是水平，iPad 屏幕的 Size 总是长宽均为 Regular 的。但是在 iOS 9 中情况就不一样了，你的 app 可能被作为附加 app 通过多任务模式打开，可能会在多任务时被用户拖动从而变成全屏 app (这时 Size Class 将从 Compact 的宽度变为 Regular)，甚至可能你的 app 作为主 app 被使用是会因为用户拖动而变成 Compact 宽度的 app：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/size_classes.png&quot; alt=&quot;&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;换句话说，你不知道你的 app 的 Size Class 会不会变化，以及何时变化，这都是用户操作的结果。因此在开发时，就必须充分考虑到这一点，力求在尺寸变化时呈现给用户良好的效果。根据屏幕大小进行合适的 UI 设计和调整自不用说，另外还应当注意在合适的时机利用 &lt;code&gt;transitionCoordinator&lt;/code&gt; 的 &lt;code&gt;-animateAlongsideTransition:&lt;/code&gt; 来进行布局动画，让切换更加自然。&lt;/p&gt;
+
+&lt;p&gt;由于多任务带来了多个 app 同台运行的可能性，因此你的 app 必定会面临和别的 app 一起运行的情况。在开发移动应用时永远不能忘记的是设备平台的限制。相比于桌面设备，移动端只有有限的内存，而两个甚至三个 app 同时在前台运行，就需要我们精心设计内存的使用。对于一般开发者来说，合理地分配内存，监听 Memory Warning 来释放 cache 和不必要的 view controller，避免循环引用等等，应该成为熟练掌握的日常开发基本功。&lt;/p&gt;
+
+&lt;p&gt;最后一个细节是对完美的苛求了。在 iOS 9 中多任务也通过 App Switcher 来进行 app 之间的切换的。所以在你的 app 被切换到后台时，系统会保存你的 app 的当前状态的截图，以供之后切换时显示。你的 app 现在有可能被作为 Regular 的全屏 app 使用，也可能使用 Compact 布局，所以在截图时系统也会依次保存两份截图。用户可能会在全屏模式下把你的 app 关闭，然后通过多任务再将你的 app 作为附加 app 打开，这时最好能保证 App Switcher 中的截图和 app 打开后用户看到的截图一致，以获取最好的体验。可能这并不是一个很大的问题，但是如果追求极致的用户体验的话，这也是必行的。对于那些含有用户敏感数据，需要将截图模糊处理的 app，现在也需要注意同时将两种布局的截图都进行处理。&lt;/p&gt;
+
+&lt;h3&gt;画中画模式&lt;/h3&gt;
+
+&lt;p&gt;iOS 9 中多任务的另一种表现形式就是视频的画中画模式：即使退出了，你的视频 app 也可以在用户使用别的 app 的时候保持播放，比如一边看美剧一边写日记或者发邮件。这大概会是所有的视频类 app 都必须要支持的特性了，实现起来也很容易：&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;使用 iOS 9 SDK 构建你的 app；&lt;/li&gt;
+&lt;li&gt;在 app 的 Capabilities 里，将 Background Modes 的 &amp;quot;Audio, AirPlay, and Picture in Picture&amp;quot; 勾选上 (Xcode 7 beta 中暂时为 &amp;quot;Audio and AirPlay&amp;quot;)；&lt;/li&gt;
+&lt;li&gt;将 AudioSession Catogory &lt;a href=&quot;https://gist.github.com/onevcat/82defadf559968c6a3bc&quot;&gt;设置为合适的选项&lt;/a&gt;，比如 &lt;code&gt;AVAudioSessionCategoryPlayback&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;使用 AVKit，AVFoundation 或者 WebKit 框架来播放视频。&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;在 iOS 9 中，一直伴随我们的 MediaPlayer 框架中的视频播放部分正式宣布寿终正寝。也就是说，如果你在使用 &lt;code&gt;MPMoviePlayerViewController&lt;/code&gt; 或者 &lt;code&gt;MPMoviePlayerController&lt;/code&gt; 在播放视频的话，你就无法使用画中画的特性了，因此尽快转型到新的视频播放框架会是急迫的适配任务。因为画中画模式是基于 &lt;code&gt;AVPlayerLayer&lt;/code&gt; 的。当切换到画中画时，会将正在播放视频的 layer 取出，然后进行缩小后添加到新的界面的 layer 上。这也是旧的 MediaPlayer 框架无法支持画中画的主要原因。&lt;/p&gt;
+
+&lt;p&gt;如果你使用 &lt;code&gt;AVPlayerViewController&lt;/code&gt; 的话，一旦满足这些简单的条件以后，你应该就可以在使用相应框架全屏播放视频时看到右下角的画中画按钮了。不论是点击这个按钮进入画中画模式还是直接使用 Home 键切换到后台，已经在播放的视频就将缩小到屏幕右下角成为画中画，并保持播放。在画中画模式下，系统会在视频的 AVPlayerLayer 上添加一套默认控件，用来控制暂停/继续，关闭，以及返回 app。前两个控制没什么可多说的，返回 app 的话需要我们自己处理返回后的操作。一般来说我们希望能够恢复到全屏模式并且继续播放这个视频，因为 &lt;code&gt;AVPlayerViewController&lt;/code&gt; 进行播放时我们一般不会去操作 &lt;code&gt;AVPlayerLayer&lt;/code&gt;，在恢复时就需要实现 &lt;code&gt;AVPlayerViewControllerDelegate&lt;/code&gt; 中的 &lt;code&gt;-playerViewController:restoreUserInterfaceForPictureInPictureStopWithCompletionHandler:&lt;/code&gt; 来根据传入的 ViewController 重建 UI，并将 &lt;code&gt;true&lt;/code&gt; 通过 CompletionHandler 返回给系统，已告知系统恢复成功 (当然如果无法恢复的话需要传递 false)。&lt;/p&gt;
+
+&lt;p&gt;我们也可以直接用 &lt;code&gt;AVPlayerLayer&lt;/code&gt; 来构建的自定义的播放器。这时我们需要通过传入所使用的 &lt;code&gt;AVPlayerLayer&lt;/code&gt; 来创建一个 &lt;code&gt;AVPictureInPictureController&lt;/code&gt;。&lt;code&gt;AVPictureInPictureController&lt;/code&gt; 提供了检查是否支持画中画模式的 API，以及其他一些控制画中画行为的方法。与直接使用 &lt;code&gt;AVPlayerViewController&lt;/code&gt; 不太一样的是，在恢复时，系统将会把画中画时缩小的 &lt;code&gt;AVPlayerLayer&lt;/code&gt; 返还到之前的 view 上。我们可以通过 &lt;code&gt;AVPictureInPictureControllerDelegate&lt;/code&gt; 中的相应方法来获知画中画的执行情况，并结合自己 app 的情况来恢复 UI。&lt;/p&gt;
+
+&lt;h3&gt;总结&lt;/h3&gt;
+
+&lt;p&gt;通过之前几年的布局，在 AutoLayout 和 Size Class 的基础上，Apple 在 iOS 9 中放出了多任务这一杀手锏。可以说同屏执行多个 app 的需求从初代 iPad 开始就一直存在，而现在总算是姗姗来迟。在 OS X 10.11 中，Apple 也将类似的特性引入了 OSX app 的全屏模式中，可以说是统一 OSX 和 iOS 这两个平台的进一步尝试。&lt;/p&gt;
+
+&lt;p&gt;但是 iPad 上的多任务还是有一些不足的。最大的问题是 app 依然是运行在沙盒中的，这就意味着在 iOS 上我们还是无法在两个 app 之间进行通讯：比如同时打开照片和一个笔记 app，我们无法通过拖拽方式将某张图片直接拖到笔记中去。虽然在 iOS 中也有 &lt;a href=&quot;https://developer.apple.com/library/mac/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingXPCServices.html&quot;&gt;XPC 服务&lt;/a&gt;，但是第三方开发者现在并不能使用，这在一定程度上还是限制了多任务的可能性。&lt;/p&gt;
+
+&lt;p&gt;不过总体来说，多任务特性使得 iPad 的实用性大大上升，这也肯定会是未来用户最常用以及最希望在 app 中看到的特性之一。花一点时间，学习 Adaptive UI 的制作方式，让 app 支持多任务运行，会是一件很合算的事情。&lt;/p&gt;
+</description>
+        <pubDate>Mon, 15 Jun 2015 15:25:07 +0800</pubDate>
+        <link>http://vno.onevcat.com/2015/06/multitasking/</link>
+        <guid isPermaLink="true">http://vno.onevcat.com/2015/06/multitasking/</guid>
+        
+        <category>能工巧匠集</category>
+        
+        
+      </item>
+    
+      <item>
+        <title>开发者所需要知道的 iOS 9 SDK 新特性</title>
+        <description>&lt;p&gt;&lt;img src=&quot;/assets/images/2015/wwdc15.jpg&quot; alt=&quot;&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;本文为InfoQ中文站特供稿件，&lt;a href=&quot;http://www.infoq.com/cn/news/2015/06/ios9-sdk&quot;&gt;首发地址&lt;/a&gt;。如需转载，请与InfoQ中文站联系。&lt;/p&gt;
+
+&lt;p&gt;年年岁岁花相似，岁岁年年人不同。今年的 WWDC 一如既往的热闹，但是因为要照顾家里刚出生的宝宝以及宝宝的娘，就只能在家里的“窝里蹲”家庭影院来关注这一全球 Apple 开发者的盛会了。&lt;/p&gt;
+
+&lt;p&gt;生命不息，学习不止。一如以往几年，我会陆续写一些关于 WWDC 和新的 SDK 里我觉得有意思和我自己重点关注和学习的内容。现在回头看前几年写的东西，愈来愈感觉到以前青葱岁月的自己真是傻得可爱。不过一路以来的成长轨迹倒是很明显，也希望自己能就这样淡然地将这段旅程继续下去。&lt;/p&gt;
+
+&lt;p&gt;矫情结束，该干活了。让我们来看看今年的 WWDC 中我认为的开发者需要关注的一些内容吧。&lt;/p&gt;
+
+&lt;h3&gt;总览&lt;/h3&gt;
+
+&lt;p&gt;iOS 9 时代开发者面临的最大的挑战和最急切的任务可能有两个方面，首先是如何利用和适配 iPad 的新的分屏多任务特性，其次是如何面对和利用 watchOS 2 来构建原生的手表 app。另外的新课题基本就都是现有框架的衍生和扩展，包括从单元测试扩展到 UI 测试，如何进一步占领和使用系统的通知中心及搜索页面，以及 Swift 2 的使用等。&lt;/p&gt;
+
+&lt;p&gt;可以说，经过了 iOS 7 和 iOS 8 连续两次重量级的变革和更新，对普通的 app 开发者来说，iOS 9 SDK 略归于缓和和平静，新的 SDK 在 API 和整体设计上并没有发生什么非常巨大的改变。开发者们也正可以利用这个机会喘息一下，尽快进一步熟悉和至少过渡到使用 iOS 8 SDK 的内容来构筑自己的 app (比如尝试使用 &lt;a href=&quot;http://onevcat.com/2014/07/ios-ui-unique/&quot;&gt;Size Class 和 Presentation Controller&lt;/a&gt; 等)，尽快提升自己的职业技能和制作的 app 的水平，并保证能跟上滚滚向前的 Apple 车轮，应该是今年 Cocoa 开发者们的主要任务。&lt;/p&gt;
+
+&lt;h3&gt;Multitasking&lt;/h3&gt;
+
+&lt;p&gt;这可以说是 iOS 9 最大的卖点了。多任务特性，特别是分屏多任务使得 iPad 真正变得像一个堪当重任的个人电脑。虽然在很早以前就已经有越狱插件能让 iPad 同时运行多个程序，但是 Apple 还是很谨慎地到 2015 年才在自己性能最为强劲的移动设备上实装这个功能。iOS 9 中的多任务分为三种表现形式，分别是临时调出的滑动覆盖 (Slide Over)，视频播放的画中画模式 (Picture in Picture) 以及真正的同时使用两个 app 的分割视图 (Split View)。现在能运行 iOS 9 的设备中只有最新的 iPad Air 2 支持分割视图方式，但是相信随着设备的更新，分割视图的使用方式很可能成为人们日常使用 iPad 的一种主流方式，因此提早进行准备是开发者们的必修功课。&lt;/p&gt;
+
+&lt;p&gt;虽然第一眼看上去感觉要支持多任务的视图会是一件非常复杂的事情，但是实际上如果你在前一年就紧跟 Apple 步伐的话，就很简单了。滑动覆盖和分割视图的 app 会使用 iOS 8 引入的 Size Class 中的 Compact Width 和 Regular Height 的设定，配合上 AutoLayout 来进行布局。也就是说，如果你的 app 之前就是 iPhone 和 iPad 通用的，并且已经使用了 Size Class 进行布局的话，基本上你不需要再额外做什么事儿就已经能支持 iOS 9 的多任务视图了。但是如果不幸你还没有使用这些技术的话，可能你会需要尽快迁移到这套布局方式中，才能完美支持了。&lt;/p&gt;
+
+&lt;p&gt;视频 app 的画中画模式相对简单一些，如果你使用 &lt;code&gt;AVPlayerViewController&lt;/code&gt; 或者 &lt;code&gt;AVPlayerLayer&lt;/code&gt; 来播放视频的话，那什么都不用做就已经支持了。但如果你之前选择的方案是 &lt;code&gt;MPMoviePlayerController&lt;/code&gt; 或者 &lt;code&gt;MPMoviePlayerViewController&lt;/code&gt; 的话，你可能也需要尽早迁移到 AVKit 的框架下来，因为 Media Player 将在 iOS 9 被标记为 deprecated 并不再继续维护。&lt;/p&gt;
+
+&lt;blockquote&gt;
+&lt;p&gt;相关专题笔记&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&quot;http://onevcat.com/2015/06/multitasking/&quot;&gt;iOS 9 多任务分屏要点&lt;/a&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;h3&gt;watchOS 2&lt;/h3&gt;
+
+&lt;p&gt;在新的 watchOS 2 中，Watch App 的架构发生了巨大改变。新系统中 Watch App 的 extension 将不像现在这样存在于 iPhone 中，而是会直接安装到手表里去，Apple Watch 从一个单纯的界面显示器进化为了可执行开发者代码的设备。得益于此，开发者们也可以在 extension 中访问到像数字表冠和 (虽然都只是很初级的访问，但是聊胜于无) 心跳计数这样的情报。虽然有所进步，但是其实 Apple 在 watchOS 2 里表现出来的态度还是十分谨慎，这可能和初代 Apple Watch 的设备限制有很大关系，所以实际上留给 app 开发者的电量和性能空间并不是十分广阔。但是相比起现在的 WatchKit 来说，可以脱离 iPhone 运行本身就是了不起的进步了。而为了和 iPhone 进行通讯，现在还添加了 WatchConnectivity 这个新框架。我们有足够的理由期待 Apple Watch 和 WatchKit 在接下来两三年里的表现。&lt;/p&gt;
+
+&lt;blockquote&gt;
+&lt;p&gt;相关专题笔记&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&quot;http://onevcat.com/2015/08/watchos2/&quot;&gt;30 分钟开发一个简单的 watchOS 2 app&lt;/a&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;h3&gt;UI Test&lt;/h3&gt;
+
+&lt;p&gt;在开发领域里，测试一直是保障产品质量关键。从 Xcode 4 以来，测试在 app 开发中的地位可谓是逐年上升。从 XCT 框架的引入，到测试 target 成为新建项目时的默认，再到去年加入的异步代码测试和性能测试。可以说现在 Xcode 自带的测试框架已经能满足绝大部分单元测试的需求了。&lt;/p&gt;
+
+&lt;p&gt;但是这并不够。开发一个 iOS app 从来都是更注重 UI 和用户体验的工作，而简单地单元测试可以很容易地保证 model 层的正确，却很难在 UI 方面有所作为。如何为一个 app 编写 UI 测试一直是 Cocoa 社区的难题之一。之前的话有像是 &lt;a href=&quot;https://github.com/kif-framework/KIF&quot;&gt;KIF&lt;/a&gt;，&lt;a href=&quot;https://developer.apple.com/library/ios/documentation/DeveloperTools/Conceptual/InstrumentsUserGuide/UsingtheAutomationInstrument/UsingtheAutomationInstrument.html&quot;&gt;Automating&lt;/a&gt;，甚至是 &lt;a href=&quot;https://github.com/facebook/ios-snapshot-test-case&quot;&gt;FBSnapshotTestCase&lt;/a&gt; 这种脑洞大开的方案。今年 Apple 给出了一个更加诱人的选项，那就是 Xcode 自带的 XCUITest 的一系列工具。&lt;/p&gt;
+
+&lt;p&gt;和大部分已有的 UI 测试工具类似，XCUI 使用 Accessibility 标记来确定 view，但因为是 Apple 自家的东西，它可以自动记录你的操作流程，所以你只需要书写最后的验证部分就可以了，比其他的 UI 测试工具方便很多。&lt;/p&gt;
+
+&lt;blockquote&gt;
+&lt;p&gt;相关专题笔记&lt;/p&gt;
+
+&lt;p&gt;&lt;a href=&quot;http://onevcat.com/2015/09/ui-testing/&quot;&gt;Xcode 7 UI 测试初窥&lt;/a&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;h3&gt;Swift 2&lt;/h3&gt;
+
+&lt;p&gt;Swift 经过了一年的改善和进步，现在已经可以很好地担任 app 开发的工作了。笔者自己也已经使用 Swift 作为日常工作的主要语言有半年多时间了，这半年里的总体感觉是越写越舒畅。Swift 2 里主要的改动是错误处理方面的变化，Apple 从 Cocoa 传统的基于 &lt;code&gt;NSError&lt;/code&gt; 错误处理方式变为了 throw catch 的异常处理机制。这个转变确实可以让程序更加安全，新增的 ErrorType 也很好地将错误描述进行了统一。但是在实际接触了一两天之后，在语法上感觉要比原来的处理写的代码多一些。可能是长久以来使用 NSError 的习惯导致吧，笔者还并没有能很好地全面接受 Swift 2 中的异常机制。不过这次 Apple 做的相对激进，把 Cocoa API 中的 error 全数替换成了 throw。所以不管情不情愿，转型到异常处理是 Swift 开发者必须面对的了。&lt;/p&gt;
+
+&lt;p&gt;另外 Apple 新加了一些像是 &lt;code&gt;guard&lt;/code&gt; 和 &lt;code&gt;defer&lt;/code&gt; 这样的控制流关键字，这在其他一些语言里也是很实用的特性，这让 Swift 的书写更加简化，阅读起来更流畅。为了解决在运行时的不同 SDK 的可用性的问题，Apple 还在 Swift 2 里加入了 avaliable 块，以前我们需要自己去记忆 API 的可用性，并通过检查系统版本并进行对比来做这件事情。现在有了 avaliable 检测，编译器将会检查出那些可能出现版本不匹配的 API 调用，app 开发的安全性得到了进一步的保障。为了让整个 SDK 更适合 Swift 的语法习惯，Apple 终于在 Objective-C 中引入了泛型。这看似是 Objective-C 的加强，但是实际上却实实在在地是为 Swift 一统 Apple 开发开路。有了 Objective-C 泛型以后，用 Swift 访问 Cocoa API 基本不会再得到 &lt;code&gt;AnyObject&lt;/code&gt; 类型了，这使得 Swift 的安全特性又上了一层台阶。&lt;/p&gt;
+
+&lt;p&gt;最后是 Swift 2 开源的消息。Swift 的编译器和标准库将在今年年底开源，对于一般的 app 开发者来说可能并不会带来什么巨变，但这确实意味着 Swift 将从一门 app 制作的专用语言转型为一门通用语言。最容易想到的就是基于 Swift 的后端开发，也许我们会在看到 Javascript 一统天下之前就能先感受一下 Swift 全栈的力量？&lt;/p&gt;
+
+&lt;blockquote&gt;
+&lt;p&gt;关于 Swift 2 的新内容，我已经在我的&lt;a href=&quot;https://selfstore.io/products/171&quot;&gt;《Swifter - 100 个 Swift 必备 tips》&lt;/a&gt;一书的第二版中进行了详细的叙述。&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;h3&gt;App Thinning&lt;/h3&gt;
+
+&lt;p&gt;笔者在日本工作，因为这边大家流量都是包月且溢出的，所以基本不会有人对 app 的尺寸介意，无非就是下载 5 秒还是 10 秒的区别。但是在和国内同行交流的时候，发现国内 app 开发对尺寸的要求近乎苛刻。因为 iOS app 为了后向兼容，现在都同时包含了 32 bit 和 64 bit 两个 slice。另外在图片资源方面，更是 1x 2x 3x 的图像一应俱全 (好吧现在 1x 应该不太需要了)。而用户使用 app 时，因为设备是特定的，其实只需要其中的一套资源。但是现在在购买和下载的时候却是把整个 app 包都下载了。&lt;/p&gt;
+
+&lt;p&gt;Apple 终于意识到了这件事情有多傻，iOS 9 中终于可以仅选择需要的内容 (Slicing) 下载了。这对用户来说是很大的利好，因为只需要升级到 iOS 9，就可以节省很多流量。对于开发者来说，并没有太多要做的事情，只需要使用 asset catalog 来管理素材标记 2x 3x 就可以了。&lt;/p&gt;
+
+&lt;p&gt;给 App 瘦身的另一个手段是提交 Bitcode 给 Apple，而不是最终的二进制。Bitcode 是 LLVM 的中间码，在编译器更新时，Apple 可以用你之前提交的 Bitcode 进行优化，这样你就不必在编译器更新后再次提交你的 app，也能享受到编译器改进所带来的好处。Bitcode 支持在新项目中是默认开启的，没有特别理由的话，你也不需要将它特意关掉。&lt;/p&gt;
+
+&lt;p&gt;最后就是按需加载的资源。这可能在游戏中应用场景会多一些。你可以用 tag 来组织像图像或者声音这样的资源，比如把它们标记为 level1，level2 这样。然后一开始只需要下载 level1 的内容，在玩的过程中再去下载 level2。或者也可以通过这个来推后下载那些需要内购才能获得的资源文件。在一些大型游戏里这是很常见的优化方法，现在在 iOS 9 里也可以方便地使用了。&lt;/p&gt;
+
+&lt;h3&gt;人工智能和搜索 API&lt;/h3&gt;
+
+&lt;p&gt;如果说这届 WWDC Keynote 上还有什么留给我印象深刻的内容的话，我会给更加智能的手机助理投上一票。虽然看起来还很初级，比如就是插入耳机时播放你喜欢的音乐，推荐你可能会联系的人和打开的 app 等，但是这确实是很有意义的一步。现在的 Siri 只是一个问答系统，如果上下文中断，“她”甚至不记得前面两句话说了些什么。一个不会记住 Boss 习惯的秘书一定不是一个好护士，而 Apple 正在让 iPhone 向这方面努力。好消息是我们大概暂时还不用担心会碰到故意不通过图灵测试的机器，所以在人工智能上还有很大的空间可以发挥。&lt;/p&gt;
+
+&lt;p&gt;而&lt;a href=&quot;https://developer.apple.com/library/prerelease/ios/releasenotes/General/WhatsNewIniOS/Articles/iOS9.html#//apple_ref/doc/uid/TP40016198-DontLinkElementID_1&quot;&gt;搜索 API&lt;/a&gt; 实质上让 app 多了一个可能的入口。有些用户会非常频繁地使用搜索界面，这是一个绝好的展示你的 app 和提高打开率的机会。如果 app 类型合适的话，这是非常值得一做的追加特性。&lt;/p&gt;
+
+&lt;h3&gt;游戏相关&lt;/h3&gt;
+
+&lt;p&gt;游戏类的 app 因为在不同的移动平台上的用户体验并没有鸿沟似的差异，所以是最容易跨平台的 - 毕竟现在无论哪个开发商都无法忽视安卓的份额。这也是 Apple 自家的 SpriteKit 和 SceneKit 这样的游戏框架一直不温不火的原因。比起被局限在 Apple 平台，更多的开发商选择像是 Unity 或者 Cocos2d-x 这样的跨平台方案。但是今年 Apple 还是持续加强了游戏方面的开发工具支持，包括负责状态机维护和寻路等的 GameplayKit 框架，负责录像和回放游戏过程的 ReplayKit 框架，以及物理建模的 Model I/O 框架。&lt;/p&gt;
+
+&lt;p&gt;这些其实都是在 Apple 的游戏开发体系中补充了一些游戏业界已经很成熟的算法和工具，为开发者节省了不少时间。对于个人开发者自制的游戏来说，Apple 的工具提供了相对低的门槛，易于上手。但是在现在大部分游戏开发都需要跨平台的年代，总感觉 Apple 体系是否能顺利走下去还需要进一步观察。&lt;/p&gt;
+
+&lt;h3&gt;其他&lt;/h3&gt;
+
+&lt;p&gt;HomeKit，CloudKit，HealthKit 等等杂七杂八的框架。如果是 iOS Only 的 app 的话，使用 CloudKit 做 &lt;a href=&quot;http://en.wikipedia.org/wiki/Mobile_Backend_as_a_service&quot;&gt;BaaS&lt;/a&gt; 也许是不错的选择，但是也要面临今后跨平台数据难以共享的风险。其他几个框架专业性相对较强，大部分需要配合硬件支援，其实一直说智能硬件是下一个爆点，但是至少现在为止还没能爆出大的声响，更多的却已经进入到廉价竞争 (手环什么的你懂的)，只能说期待这些设备的后续表现吧。&lt;/p&gt;
+
+&lt;p&gt;最后是一个对于刚入门或者打算投身到 Apple 开发中的朋友的福利。现在你可以不需要加入付费的开发者计划就能将 app 部署到自己的设备上了，而在以前这至少需要你加入 99 美金每年的开发者计划，这可以说进一步降低了进行 Apple 开发的门槛。&lt;/p&gt;
+
+&lt;h3&gt;总结&lt;/h3&gt;
+
+&lt;p&gt;正如上面提到的，对开发者来说，今年的 WWDC 并没有像 13 年和 14 年那样颠覆性的变化，大多是对已有特性的加强补充和对开发工具链的增强。今年可以说是一个 Cocoa 开发者们沉淀之前知识，增进自己技能的好机会。现在 WWDC 15 还在如火如荼的进行之中。如果你打算尽早拥抱新 SDK 的变化的话，请不要犹豫，直接访问 Apple 的&lt;a href=&quot;https://developer.apple.com/&quot;&gt;开发者网站&lt;/a&gt;，去寻找和观看自己感兴趣的话题吧。&lt;/p&gt;
+</description>
+        <pubDate>Thu, 11 Jun 2015 09:24:16 +0800</pubDate>
+        <link>http://vno.onevcat.com/2015/06/ios9-sdk/</link>
+        <guid isPermaLink="true">http://vno.onevcat.com/2015/06/ios9-sdk/</guid>
+        
+        <category>能工巧匠集</category>
+        
+        
+      </item>
+    
+      <item>
+        <title>跨平台开发时代的 (再次) 到来？</title>
+        <description>&lt;p&gt;&lt;img src=&quot;/assets/images/2015/cross-platform.png&quot; alt=&quot;cross-platform&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;这篇文章主要想谈谈最近又刮起的移动开发跨平台之风，并着重介绍和对比一下像是 &lt;a href=&quot;https://xamarin.com&quot;&gt;Xamarin&lt;/a&gt;，&lt;a href=&quot;https://www.nativescript.org&quot;&gt;NativeScript&lt;/a&gt; 和 &lt;a href=&quot;http://facebook.github.io/react-native/&quot;&gt;React Native&lt;/a&gt; 之类的东西。不会有特别深入的技术讨论，大家可以当作一篇科普类的文章来看。&lt;/p&gt;
+
+&lt;h3&gt;故事的开始&lt;/h3&gt;
+
+&lt;p&gt;“一次编码，处处运行” 永远是程序员们的理想乡。二十年前 Java 正式举着这面大旗登场，击败了众多竞争对手。但是时至今日，事实已经证明了 Java 笨重的体型和缓慢的发展显然已经很难再抓住这个时代快速跃动的脚步。在新时代的移动大潮下，一个应用想要取胜，完美的使用体验可以说必不可少。使用 native 的方式固然对提升用户体验很有帮助，但是移动的现状是必须针对不同平台 (至少是 iOS 和 Android) 进行开发。这对于开发来说妥妥的是隐患和额外的负担：我们不仅需要在不同的项目间努力用不同的语言实现同样代码的同步，还要承担由此带来的后续维护任务。如果仅只限制在 iOS 和 Android 的话还行，但是如果还要继续向 Windows Phone 等平台拓展的话，所需要付出的代价和&lt;a href=&quot;http://en.wikipedia.org/wiki/Man-hour&quot;&gt;工数&lt;/a&gt;将几何级增长，这显然是难以接受的。于是，一个其实一直断断续续被提及但是从没有占据过统治地位的概念又一次走进了移动开发者们的视野，那就是跨平台开发。&lt;/p&gt;
+
+&lt;h3&gt;本地 HTML 和 JavaScript&lt;/h3&gt;
+
+&lt;p&gt;因为每个平台都有浏览器，也都有 WebView 控件，所以我们可以使用 HTML，CSS 和 JavaScript 来将 web 的内容和体验搬到本地。通过这样做我们可以将逻辑和 UI 渲染部分都统一，以减少开发和维护成本。这种方式开发的 app 一般被称为 &lt;a href=&quot;http://blogs.telerik.com/appbuilder/posts/12-06-14/what-is-a-hybrid-mobile-app-&quot;&gt;Hybrid app&lt;/a&gt;，像 &lt;a href=&quot;http://phonegap.com&quot;&gt;PhoneGap&lt;/a&gt; 或者 &lt;a href=&quot;http://cordova.apache.org&quot;&gt;Cordova&lt;/a&gt; 这样的解决方案就是典型的应用。除了使用前端开发的一套技巧来构建页面和交互以外，一般这类框架还会提供一些访问设备的接口，比如相机和 GPS 等。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/hybrid-app.jpg&quot; alt=&quot;hybrid-app&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;虽然使用全网页的开发策略和环境可以带来代码维护的便利，但是这种方式是有致命弱点的，那就是缓慢的渲染速度和难以驾驭的动画效果。这两者对于用户体验是致命而且难以接受的。随着三年前 Facebook 使用 native 代码重新构建 Facebook 的手机 app 这一&lt;a href=&quot;https://www.facebook.com/notes/facebook-engineering/under-the-hood-rebuilding-facebook-for-ios/10151036091753920&quot;&gt;标志性事件&lt;/a&gt;的发生，曾经一度占领半壁江山的网页套壳的 app 的发展也日渐式微。特别在现在对于用户体验的追求几近苛刻的现在，呆板的动画效果和生硬的交互体验已经完全无法满足人民群众对高质量 app 的心理预期了。&lt;/p&gt;
+
+&lt;h3&gt;跨平台之心不死的我们该怎么办&lt;/h3&gt;
+
+&lt;p&gt;想要解决用户体验的问题，基本还是需要回到 native 来进行开发，但是这种行为必然会与平台绑定。世界上总是有聪明人的，并且他们总会利用看起来更加聪明但是实际上却很笨的电脑来做那些很笨的事情 (恰得其所)。其中一件事情就是自动将某个平台的代码转换到另外的平台上去。有一家英国的小公司正在做这样的事情，&lt;a href=&quot;https://www.myappconverter.com&quot;&gt;MyAppConverter&lt;/a&gt; 想做的事情就是把 iOS 的代码自动转成 Java 的。但是很可惜，如果你尝试过的话，就知道他们的产品暂时还处于无法实用的状态。&lt;/p&gt;
+
+&lt;p&gt;在这条路的另一个分叉上有一家公司走得更远，它叫做 &lt;a href=&quot;http://www.apportable.com&quot;&gt;Apportable&lt;/a&gt;。他们在游戏的转换上已经取得了&lt;a href=&quot;https://dashboard.apportable.com/customers&quot;&gt;很大的成果&lt;/a&gt;，像是 Kingdom Rush 或者 Mega Run 这样的大作都使用了这家的服务将游戏从 iOS 转换到 Android，并且非常成功。可以毫不夸张地说，Apportable 是除开直接使用像 Unity 或者 Cocos2d-x 以外的另一套诱人的游戏跨平台解决方案。基本上你可以使用 Objective-C 或者 Swift 来在熟悉的平台上开发，而不必去触碰像是 C++ 这样的怪兽 (虽然其实在游戏开发中也不会碰到很难的 C++)。&lt;/p&gt;
+
+&lt;p&gt;但是好消息终结于游戏开发了，因为游戏在不同平台上体验不会差别很大，也很少用到不同平台的不同特性，所以处理起来相对容易。当我们想开发一个非游戏的 app 时，事情就要复杂得多。虽然 Apportable &lt;a href=&quot;http://www.tengu.com&quot;&gt;有一个计划&lt;/a&gt;让 app 转换也能可行，但是估计还需要一段时间我们才能看到它的推出。&lt;/p&gt;
+
+&lt;h3&gt;新的希望&lt;/h3&gt;
+
+&lt;h4&gt;Xamarin&lt;/h4&gt;
+
+&lt;p&gt;其实跨平台开发最大的问题还是针对不同的平台 UI 和体验的不同。如果忽视掉这个最困难的问题，只是共用逻辑部分的代码的话，问题一下子就简单不少。十多年前，当 .NET 刚刚被公布，大家对新时代的开发充满期待的同时，一群喜欢捣鼓的 Hacker 就在盘算要如何将 .NET 和 C# 搬到 Linux 上去。而这就是 &lt;a href=&quot;http://www.mono-project.com&quot;&gt;Mono&lt;/a&gt; 的起源。Mono 通过在其他平台上实现和 Windows 平台下功能相同的 Common Language Runtime 来运行 .NET 中间代码。现在 Mono 社区已经足够强大，并且不仅仅支持 Linux 平台，对移动设备也同样支持。Mono 背后的支撑企业 &lt;a href=&quot;http://xamarin.com&quot;&gt;Xamarin&lt;/a&gt; 也顺理成章并适时地推出了一整套的移动跨平台解决方案。&lt;/p&gt;
+
+&lt;p&gt;Xamarin 的思路相对简单，那就是使用 C# 来完成所有平台共用的，和平台无关的 app 逻辑部分；然后由于各个平台的 UI 和交互不同，使用预先由 Xamarin 封装好的 C# API 来访问和操控 native 的控件，进行分别针对不同平台的 UI 开发。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/xamarin.png&quot; alt=&quot;xamarin&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;虽然只有逻辑部分实现了真正的跨平台，而表现层已然需要分别开发，但这确实也是一种在完整照顾用户体验的基础上的好方式 -- 至少开发语言得到了统一。因为 Xamarin 解决方案中的纯 C# 环境和有深厚的 .NET 技术背景做支撑，这个项目现在也受到了微软的支持和重视。&lt;/p&gt;
+
+&lt;p&gt;不过存在的致命问题是针对某个特定平台你所能使用的 API 是由 Xamarin 所决定的。也就是说一旦 iOS 或者 Android 平台推出了新的 SDK，加入了新的功能，你必须要等 Xamarin 的工程师先进行封装，然后才能在自己的项目中使用。这种延迟往往可能是致命的，因为现在 AppStore 对于新功能的首页推荐往往只会有新系统上线后的一两周，错过这段时间的话，可能你的 app 就再无翻身之日。而且如果你想使用一些第三方框架的话，将不得不自己动手将它们打包成二进制，并且写 binding 为它们提供 C# 的封装，除非已经有别人帮你&lt;a href=&quot;https://github.com/mono/monotouch-bindings&quot;&gt;做过&lt;/a&gt;这件事情了。&lt;/p&gt;
+
+&lt;p&gt;另外，因为 UI 部分还是各自为战，所以不同的代码库依然存在于项目之中，这对工作量的减少的帮助有限，并且之后的维护中还是存在无法同步和版本差异的隐患。但是总体来说，Xamarin 是一个很不错的解决跨平台开发的思路了。(如果抛开价格因素的话)&lt;/p&gt;
+
+&lt;h4&gt;NativeScript&lt;/h4&gt;
+
+&lt;p&gt;&lt;a href=&quot;https://www.nativescript.org&quot;&gt;NativeScript&lt;/a&gt; 是一家名叫 Telerik 的名不见经传保加利亚公司刚刚宣布的项目。虽然 Telerik 并不是很出名，但是却已经在 hybrid app 和跨平台开发这条路上走了很久。&lt;/p&gt;
+
+&lt;p&gt;JavaScript 因为广泛的群众基础和易学易用的语言特点，已经大有一统天下的趋势。而现在主流移动平台也都有强劲的处理 JavaScript 的能力 (iOS 7 以后的 JavaScriptCore 以及 Android 自带的 V8 JavaScript Engine)，因为使用 JavaScript 来跨平台水到渠成地成为了一个可选项。&lt;/p&gt;
+
+&lt;blockquote&gt;
+&lt;p&gt;在此要吐槽一下，JavaScript 真的是一家公司，一个项目拯救回来的语言。V8 之前谁能想到 JavaScript 能有今日...&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;NativeScript 的思路就是使用移动平台的 JavaScript 引擎来进行跨平台开发。逻辑部分自然无需多说，关键在于如何使用平台特性，JavaScript 要怎样才能调用 native 的东西呢。NativeScript 给出的答案是通过反射得到所有平台 API，预编译它们，然后将这些 API 注入到 JavaScript 运行环境，接下来在 Javascript 调用后拦截这个调用，并运行 native 代码。&lt;/p&gt;
+
+&lt;blockquote&gt;
+&lt;p&gt;在此不打算展开说 NativeScript 详细的原理，如果你对它感兴趣，不妨去看看 Telerik 的员工的写的这篇&lt;a href=&quot;http://developer.telerik.com/featured/nativescript-works/&quot;&gt;博客&lt;/a&gt;以及发布时的 &lt;a href=&quot;https://www.youtube.com/watch?v=8hr4E9eodS4&quot;&gt;Keynote&lt;/a&gt;。&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/nativescript-architecture.png&quot; alt=&quot;nativescript-architecture&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;这么做最大的好处是你可以任意使用最新的平台 API 以及各种第三方库。通过对元数据的反射和注入，NativeScript 的 JavaScript 运行环境总能找到它们，触发相应的调用以及最终访问到 iOS 或者 Android 的平台代码。最新版本的平台 SDK 或者第三方库的内容总是可以被获取和使用，而不需要有什么限制。&lt;/p&gt;
+
+&lt;p&gt;举个简单的例子，比如创建一个文件，为 iOS 开发的话，可以直接在 JavaScript 里写这样的代码：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-text&quot; data-lang=&quot;text&quot;&gt;var fileManager = NSFileManager.defaultManager();
+fileManager.createFileAtPathContentsAttributes( path );
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;而对应的 Android 版本也许是：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-text&quot; data-lang=&quot;text&quot;&gt;new java.io.File( path );
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;你不需要担心 &lt;code&gt;NSFileManager&lt;/code&gt; 或者 &lt;code&gt;java.io&lt;/code&gt; 这类东西的存在，而是可以任意地使用它们！&lt;/p&gt;
+
+&lt;p&gt;如果仅只是这样的话，使用上还是非常不便。NativeScript 借助类似 node 的一套包管理系统，用 modules 对这些不同平台的代码进行了统一的封装。比如上面的代码，可以统一使用下面的形式替换：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-text&quot; data-lang=&quot;text&quot;&gt;var fs = require( &amp;quot;file-system&amp;quot; );
+var file = new fs.File( path );
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;写过 node 的同学肯定对这样的形式很熟悉了，这里的 &lt;code&gt;file-system&lt;/code&gt; 就是 NativeScript 进行的统一平台的封装。现在的完整的封装列表可以参见这个 &lt;a href=&quot;https://github.com/NativeScript/cross-platform-modules&quot;&gt;repo&lt;/a&gt;。因为写法很简单，所以开发者如果有需要的话，也可以创建自己的封装，甚至使用 npm 来发布和共享 (当然也有获取别人写的封装)。因为依赖于已有的成熟包管理系统，所以可以认为扩展性是有保证的。&lt;/p&gt;
+
+&lt;p&gt;对于 UI 的处理，NativeScript 选择了使用类似 Android 的 XML 的方式进行布局，然后用 CSS 来控制控件的样式。这是一种很有趣的想法，虽然 UI 的布局灵活性上无法与针对不同平台的 native 布局相比，但是其实和传统的 Android 布局已经很接近。举个布局文件的例子就可见一斑：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-text&quot; data-lang=&quot;text&quot;&gt;&amp;lt;Page loaded=&amp;quot;onPageLoaded&amp;quot;&amp;gt;
+    &amp;lt;GridLayout rows=&amp;quot;auto, *&amp;quot;&amp;gt;
+        &amp;lt;StackLayout orientation=&amp;quot;horizontal&amp;quot; row=&amp;quot;0&amp;quot;&amp;gt;
+            &amp;lt;TextField width=&amp;quot;200&amp;quot; text=&amp;quot;&amp;quot; hint=&amp;quot;Enter a task&amp;quot; id=&amp;quot;task&amp;quot; /&amp;gt;
+            &amp;lt;Button text=&amp;quot;Add&amp;quot; tap=&amp;quot;add&amp;quot;&amp;gt;&amp;lt;/Button&amp;gt;
+        &amp;lt;/StackLayout&amp;gt;
+
+        &amp;lt;ListView items=&amp;quot;&amp;quot; row=&amp;quot;1&amp;quot;&amp;gt;
+            &amp;lt;ListView.itemTemplate&amp;gt;
+                &amp;lt;Label text=&amp;quot;&amp;quot; /&amp;gt;
+            &amp;lt;/ListView.itemTemplate&amp;gt;
+        &amp;lt;/ListView&amp;gt;
+    &amp;lt;/GridLayout&amp;gt;
+&amp;lt;/Page&amp;gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;熟悉 Android 或者 Window Phone 开发的读者可能会感到找到了组织。你可能已经注意到，相比于 Android 的布局方式，NativeScript 天生支持 MVVM 和 data binding，这在开发中会十分方便 (但是性能上暂时就未知了)。而像是 &lt;code&gt;Button&lt;/code&gt; 或者 &lt;code&gt;ListView&lt;/code&gt; 这样的控件都是由 modules 映射到对应平台的系统标准控件。这些控件的话都是使用 css 来指定样式的，这与传统的网页开发没太大区别。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2015/nativescript-ui.png&quot; alt=&quot;nativescript-ui&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;NativeScript 代表的思路是使用大量 web 开发的技巧来进行 app 开发。这是一个很值得期待的方向，相信也会受到很多前端开发者的欢迎 -- 因为工具链和语言都非常熟悉。但是这个方向依然面临的最大挑战还是 UI，现在看来开发者是被限制在预先定义好的 UI 控件中的，而不能像传统 Hybrid app 那样使用 HTML5 的元素。这使得如何能开发出高度自定义的 UI 和交互成为问题。另一个可能存在的问题是最终 app 的尺寸。因为我们需要将整个元数据注入到运行环境中，也存在很多在不同语言中的编译，所以不可避免地会造成较大的 app 尺寸。最后一个挑战是对于像 app 这样的工程，没有类型检查和编译器的帮助，开发起来难度会比较大。另外在调试的时候也可能会有传统 app 开发中不曾遇到的问题。&lt;/p&gt;
+
+&lt;p&gt;总体来看，NativeScript 是很有希望的一个方案。如果它能实现自己的愿景，那必将是跨平台这块大蛋糕的有力竞争者。当然，现在 NativeScript 还太年轻，也还有&lt;a href=&quot;https://www.nativescript.org/roadmap&quot;&gt;很多问题&lt;/a&gt;。不妨多给这个项目一点时间，看看正式版本上线后的表现。&lt;/p&gt;
+
+&lt;h4&gt;React Native&lt;/h4&gt;
+
+&lt;p&gt;Facebook 几个月前&lt;a href=&quot;https://code.facebook.com/videos/786462671439502/react-js-conf-2015-keynote-introducing-react-native-/&quot;&gt;公布&lt;/a&gt;了 React Native，而今天这个项目终于在万众期待下&lt;a href=&quot;http://facebook.github.io/react-native/&quot;&gt;发布&lt;/a&gt;了。&lt;/p&gt;
+
+&lt;p&gt;React Native 在一定程度上和 NativeScript 的概念类似：都是使用 JavaScript 和 native UI 来实现 app (所以说 JavaScript 真是有一桶浆糊的趋势..如果你现在还不会写几句 JavaScript 的话，建议尽早学一学)。但是它们的出发点略有不同，React Native 在首页上就写明了，使用这个库可以：&lt;/p&gt;
+
+&lt;blockquote&gt;
+&lt;p&gt;learn once, write anywhere&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;而并不是 &amp;quot;run anywhere&amp;quot;。所以说 React Native 想要达成的目标其实并不是一个跨平台 app 开发方案，而是让你能够使用相似的方法和同样的语言来在不同平台进行开发的工具。另外，React Native 的主要工作是构建响应式的 View，其长处在于根据应用所处的状态来决定 View 的表现状态。而对于其他一些系统平台的 API 来说，就显得比较无力。而正是由于这些要素，使得 React Native 确实不是一个跨平台的好选择。&lt;/p&gt;
+
+&lt;p&gt;那为什么我们还要在这篇以 “跨平台” 为主题的文章里谈及 React Native 呢？&lt;/p&gt;
+
+&lt;p&gt;因为虽然 Facebook 不是以跨平台为出发点，但是却不可能阻止工程师想要这么来使用它。从原理上来说，React Native 继承了 React.js 的虚拟 DOM 的思想，只不过这次变成了虚拟 View。事实上这个框架提供了一组 native 实现的 view (在 iOS 平台上是 &lt;code&gt;RCT&lt;/code&gt; 开头的一系列类)。我们在写 JavaScript (更准确地说，对于 React Native，我们写的是带有 XML 的 JavaScript：&lt;a href=&quot;http://facebook.github.io/react/docs/jsx-in-depth.html&quot;&gt;JSX&lt;/a&gt;) 时，通过将虚拟 View 添加并绑定到注册的模块中，在 native 侧用 JavaScript 运行环境 (对于 iOS 来说也就是 JavaScriptCore) 执行编译并注入好的 JavaScript 代码，获取其对 UI 的调用，将其截取并桥接到 native 代码中进行对应部件的渲染。而在布局方面，依然是通过 CSS 来实现的。&lt;/p&gt;
+
+&lt;p&gt;这里整个过程和思路与 NativeScript 有相似之处，但是在与 native 桥接的时候采取的策略完全相反。React Native 是将 native 侧作为渲染的后端，去提供统一的 JavaScript 侧所需要的 View 的实体。NativeScript 基本算反其道行之，是在 JavaScript 里写分开的中间层来分别对应不同平台。&lt;/p&gt;
+
+&lt;p&gt;对于非 View 的处理，对于 iOS，React Native 提供了 &lt;code&gt;RCTBridgeModule&lt;/code&gt; 协议，我们可以通过在 native 侧实现这个协议来提供 JavaScript 中的访问可能。另外，回调和事件发送等也可以通过相应的 native 代码来完成。&lt;/p&gt;
+
+&lt;p&gt;总结来说，如果想要把 React Native 作为一个跨平台方案来看的话 (实际上也并不应当如此)，那么单靠 JavaScript 一侧是难以完成的，因为一款有意义的 app 不太可能完全不借助平台 API 的力量。但是毕竟这个项目背后是 Facebook，如果 Facebook 想要通过自己的影响力自立一派的话，必定会通过不断改进和工具链的完善，将 app 开发的风向引导至自己旗下。对于原来就使用 React.js 的开发者来说，这个框架降低了他们进入 app 开发的门槛。但是对于已经在做 native app 开发的人来说，是否值得和需要投入精力进行学习，还需要观察 Facebook 接下来动作。&lt;/p&gt;
+
+&lt;p&gt;不过现在 React Native 的正式发布才过去了不到 24 小时，我想我们有的是时间来思考和检阅这样一个框架。&lt;/p&gt;
+
+&lt;h3&gt;总结&lt;/h3&gt;
+
+&lt;p&gt;当然还有一些其他方案，比如 &lt;a href=&quot;http://www.appcelerator.com/titanium/&quot;&gt;Titanium&lt;/a&gt; 等。现在使用跨平台方案开发 app 的案例并不算很多，但是无论在项目管理还是维护上，跨平台始终是一种诱惑。它们都解决了一些 Hybrid app 的遗留问题，但是它们又都有一些非 native app 的普遍面临的阴影。谁能找到一个好的方式来解决像是自定义 UI，API 扩展性以及 app 尺寸这样的问题，谁就将能在这个市场中取得领先或者胜利，从而引导之后的开发潮流。&lt;/p&gt;
+
+&lt;p&gt;但是谁又知道最后谁能取胜呢？也有可能大家在跨平台的道路上再一次全体失败。伺机而动也许是现在开发者们很好的选择，不过我的建议是提前&lt;a href=&quot;http://www.codecademy.com/en/tracks/javascript&quot;&gt;学点儿 JavaScript&lt;/a&gt; 总是不会出错的。&lt;/p&gt;
+</description>
+        <pubDate>Fri, 27 Mar 2015 17:56:08 +0800</pubDate>
+        <link>http://vno.onevcat.com/2015/03/cross-platform/</link>
+        <guid isPermaLink="true">http://vno.onevcat.com/2015/03/cross-platform/</guid>
+        
+        <category>能工巧匠集</category>
+        
+        
+      </item>
+    
+      <item>
+        <title>Swift 中的指针使用</title>
+        <description>&lt;p&gt;Apple 期望在 Swift 中指针能够尽量减少登场几率，因此在 Swift 中指针被映射为了一个泛型类型，并且还比较抽象。这在一定程度上造成了在 Swift 中指针使用的困难，特别是对那些并不熟悉指针，也没有多少指针操作经验的开发者 (包括我自己也是) 来说，在 Swift 中使用指针确实是一个挑战。在这篇文章里，我希望能从最基本的使用开始，总结一下在 Swift 中使用指针的一些常见方式和场景。这篇文章假定你至少知道指针是什么，如果对指针本身的概念不太清楚的话，可以先看看这篇&lt;a href=&quot;http://denniskubes.com/2012/08/16/the-5-minute-guide-to-c-pointers/&quot;&gt;五分钟 C 指针教程&lt;/a&gt; (或者它的&lt;a href=&quot;http://blog.jobbole.com/25409/&quot;&gt;中文版本&lt;/a&gt;)，应该会很有帮助。&lt;/p&gt;
+
+&lt;h2&gt;初步&lt;/h2&gt;
+
+&lt;p&gt;在 Swift 中，指针都使用一个特殊的类型来表示，那就是 &lt;code&gt;UnsafePointer&amp;lt;T&amp;gt;&lt;/code&gt;。遵循了 Cocoa 的一贯不可变原则，&lt;code&gt;UnsafePointer&amp;lt;T&amp;gt;&lt;/code&gt; 也是不可变的。当然对应地，它还有一个可变变体，&lt;code&gt;UnsafeMutablePointer&amp;lt;T&amp;gt;&lt;/code&gt;。绝大部分时间里，C 中的指针都会被以这两种类型引入到 Swift 中：C 中 const 修饰的指针对应 &lt;code&gt;UnsafePointer&lt;/code&gt; (最常见的应该就是 C 字符串的 &lt;code&gt;const char *&lt;/code&gt; 了)，而其他可变的指针则对应 &lt;code&gt;UnsafeMutablePointer&lt;/code&gt;。除此之外，Swift 中存在表示一组连续数据指针的 &lt;code&gt;UnsafeBufferPointer&amp;lt;T&amp;gt;&lt;/code&gt;，表示非完整结构的不透明指针 &lt;code&gt;COpaquePointer&lt;/code&gt; 等等。另外你可能已经注意到了，能够确定指向内容的指针类型都是泛型的 struct，我们可以通过这个泛型来对指针指向的类型进行约束以提供一定安全性。&lt;/p&gt;
+
+&lt;p&gt;对于一个 &lt;code&gt;UnsafePointer&amp;lt;T&amp;gt;&lt;/code&gt; 类型，我们可以通过 &lt;code&gt;memory&lt;/code&gt; 属性对其进行取值，如果这个指针是可变的 &lt;code&gt;UnsafeMutablePointer&amp;lt;T&amp;gt;&lt;/code&gt; 类型，我们还可以通过 &lt;code&gt;memory&lt;/code&gt; 对它进行赋值。比如我们想要写一个利用指针直接操作内存的计数器的话，可以这么做：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-text&quot; data-lang=&quot;text&quot;&gt;func incrementor(ptr: UnsafeMutablePointer&amp;lt;Int&amp;gt;) {
+    ptr.memory += 1
+}
+
+var a = 10
+incrementor(&amp;amp;a)
+
+a  // 11
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;这里和 C 的指针使用类似，我们通过在变量名前面加上 &lt;code&gt;&amp;amp;&lt;/code&gt; 符号就可以将指向这个变量的指针传递到接受指针作为参数的方法中去。在上面的 &lt;code&gt;incrementor&lt;/code&gt; 中我们通过直接操作 &lt;code&gt;memory&lt;/code&gt; 属性改变了指针指向的内容。&lt;/p&gt;
+
+&lt;p&gt;与这种做法类似的是使用 Swift 的 &lt;code&gt;inout&lt;/code&gt; 关键字。我们在将变量传入 &lt;code&gt;inout&lt;/code&gt; 参数的函数时，同样也使用 &lt;code&gt;&amp;amp;&lt;/code&gt; 符号表示地址。不过区别是在函数体内部我们不需要处理指针类型，而是可以对参数直接进行操作。&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-text&quot; data-lang=&quot;text&quot;&gt;func incrementor1(inout num: Int) {
+    num += 1
+}
+
+var b = 10
+incrementor1(&amp;amp;b)
+
+b  // 11
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;虽然 &lt;code&gt;&amp;amp;&lt;/code&gt; 在参数传递时表示的意义和 C 中一样，是某个“变量的地址”，但是在 Swift 中我们没有办法直接通过这个符号获取一个 &lt;code&gt;UnsafePointer&lt;/code&gt; 的实例。需要注意这一点和 C 有所不同：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-text&quot; data-lang=&quot;text&quot;&gt;// 无法编译
+let a = 100
+let b = &amp;amp;a
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;h2&gt;指针初始化和内存管理&lt;/h2&gt;
+
+&lt;p&gt;在 Swift 中不能直接取到现有对象的地址，我们还是可以创建新的 &lt;code&gt;UnsafeMutablePointer&lt;/code&gt; 对象。与 Swift 中其他对象的自动内存管理不同，对于指针的管理，是需要我们手动进行内存的申请和释放的。一个 &lt;code&gt;UnsafeMutablePointer&lt;/code&gt; 的内存有三种可能状态：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;内存没有被分配，这意味着这是一个 null 指针，或者是之前已经释放过&lt;/li&gt;
+&lt;li&gt;内存进行了分配，但是值还没有被初始化&lt;/li&gt;
+&lt;li&gt;内存进行了分配，并且值已经被初始化&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;其中只有第三种状态下的指针是可以保证正常使用的。&lt;code&gt;UnsafeMutablePointer&lt;/code&gt; 的初始化方法 (&lt;code&gt;init&lt;/code&gt;) 完成的都是从其他类型转换到 &lt;code&gt;UnsafeMutablePointer&lt;/code&gt; 的工作。我们如果想要新建一个指针，需要做的是使用 &lt;code&gt;alloc:&lt;/code&gt; 这个类方法。该方法接受一个 &lt;code&gt;num: Int&lt;/code&gt; 作为参数，将向系统申请 &lt;code&gt;num&lt;/code&gt; 个数的对应泛型类型的内存。下面的代码申请了一个 &lt;code&gt;Int&lt;/code&gt; 大小的内存，并返回指向这块内存的指针：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-text&quot; data-lang=&quot;text&quot;&gt;var intPtr = UnsafeMutablePointer&amp;lt;Int&amp;gt;.alloc(1)
+// &amp;quot;UnsafeMutablePointer(0x7FD3A8E00060)&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;接下来应该做的是对这个指针的内容进行初始化，我们可以使用 &lt;code&gt;initialize:&lt;/code&gt; 方法来完成初始化：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-text&quot; data-lang=&quot;text&quot;&gt;intPtr.initialize(10)
+// intPtr.memory 为 10
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;在完成初始化后，我们就可以通过 &lt;code&gt;memory&lt;/code&gt; 来操作指针指向的内存值了。&lt;/p&gt;
+
+&lt;p&gt;在使用之后，我们最好尽快释放指针指向的内容和指针本身。与 &lt;code&gt;initialize:&lt;/code&gt; 配对使用的 &lt;code&gt;destroy&lt;/code&gt; 用来销毁指针指向的对象，而与 &lt;code&gt;alloc:&lt;/code&gt; 对应的 &lt;code&gt;dealloc:&lt;/code&gt; 用来释放之前申请的内存。它们都应该被配对使用：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-text&quot; data-lang=&quot;text&quot;&gt;intPtr.destroy()
+intPtr.dealloc(1)
+intPtr = nil
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;blockquote&gt;
+&lt;p&gt;注意其实在这里对于 &lt;code&gt;Int&lt;/code&gt; 这样的在 C 中映射为 int 的 “平凡值” 来说，&lt;code&gt;destroy&lt;/code&gt; 并不是必要的，因为这些值被分配在常量段上。但是对于像类的对象或者结构体实例来说，如果不保证初始化和摧毁配对的话，是会出现内存泄露的。所以没有特殊考虑的话，不论内存中到底是什么，保证 &lt;code&gt;initialize:&lt;/code&gt; 和 &lt;code&gt;destroy&lt;/code&gt; 配对会是一个好习惯。&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;h2&gt;指向数组的指针&lt;/h2&gt;
+
+&lt;p&gt;在 Swift 中将一个数组作为参数传递到 C API 时，Swift 已经帮助我们完成了转换，这在 Apple 的&lt;a href=&quot;https://developer.apple.com/swift/blog/?id=6&quot;&gt;官方博客&lt;/a&gt;中有个很好的例子：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-text&quot; data-lang=&quot;text&quot;&gt;import Accelerate
+
+let a: [Float] = [1, 2, 3, 4]
+let b: [Float] = [0.5, 0.25, 0.125, 0.0625]
+var result: [Float] = [0, 0, 0, 0]
+
+vDSP_vadd(a, 1, b, 1, &amp;amp;result, 1, 4)
+
+// result now contains [1.5, 2.25, 3.125, 4.0625]
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;对于一般的接受 const 数组的 C API，其要求的类型为 &lt;code&gt;UnsafePointer&lt;/code&gt;，而非 const 的数组则对应 &lt;code&gt;UnsafeMutablePointer&lt;/code&gt;。使用时，对于 const 的参数，我们直接将 Swift 数组传入 (上例中的 &lt;code&gt;a&lt;/code&gt; 和 &lt;code&gt;b&lt;/code&gt;)；而对于可变的数组，在前面加上 &lt;code&gt;&amp;amp;&lt;/code&gt; 后传入即可 (上例中的 &lt;code&gt;result&lt;/code&gt;)。&lt;/p&gt;
+
+&lt;p&gt;对于传参，Swift 进行了简化，使用起来非常方便。但是如果我们想要使用指针来像之前用 &lt;code&gt;memory&lt;/code&gt; 的方式直接操作数组的话，就需要借助一个特殊的类型：&lt;code&gt;UnsafeMutableBufferPointer&lt;/code&gt;。Buffer Pointer 是一段连续的内存的指针，通常用来表达像是数组或者字典这样的集合类型。&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-text&quot; data-lang=&quot;text&quot;&gt;var array = [1, 2, 3, 4, 5]
+var arrayPtr = UnsafeMutableBufferPointer&amp;lt;Int&amp;gt;(start: &amp;amp;array, count: array.count)
+// baseAddress 是第一个元素的指针
+var basePtr = arrayPtr.baseAddress as UnsafeMutablePointer&amp;lt;Int&amp;gt;
+
+basePtr.memory // 1
+basePtr.memory = 10
+basePtr.memory // 10
+
+//下一个元素
+var nextPtr = basePtr.successor()
+nextPtr.memory // 2
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;h2&gt;指针操作和转换&lt;/h2&gt;
+
+&lt;h3&gt;withUnsafePointer&lt;/h3&gt;
+
+&lt;p&gt;上面我们说过，在 Swift 中不能像 C 里那样使用 &lt;code&gt;&amp;amp;&lt;/code&gt; 符号直接获取地址来进行操作。如果我们想对某个变量进行指针操作，我们可以借助 &lt;code&gt;withUnsafePointer&lt;/code&gt; 这个辅助方法。这个方法接受两个参数，第一个是 &lt;code&gt;inout&lt;/code&gt; 的任意类型，第二个是一个闭包。Swift 会将第一个输入转换为指针，然后将这个转换后的 &lt;code&gt;Unsafe&lt;/code&gt; 的指针作为参数，去调用闭包。使用起来大概是这个样子：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-text&quot; data-lang=&quot;text&quot;&gt;var test = 10
+test = withUnsafeMutablePointer(&amp;amp;test, { (ptr: UnsafeMutablePointer&amp;lt;Int&amp;gt;) -&amp;gt; Int in
+    ptr.memory += 1
+    return ptr.memory
+})
+
+test // 11
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;这里其实我们做了和文章一开始的 &lt;code&gt;incrementor&lt;/code&gt; 相同的事情，区别在于不需要通过方法的调用来将值转换为指针。这么做的好处对于那些只会执行一次的指针操作来说是显而易见的，可以将“我们就是想对这个指针做点事儿”这个意图表达得更加清晰明确。&lt;/p&gt;
+
+&lt;h3&gt;unsafeBitCast&lt;/h3&gt;
+
+&lt;p&gt;&lt;code&gt;unsafeBitCast&lt;/code&gt; 是非常危险的操作，它会将一个指针指向的内存强制按位转换为目标的类型。因为这种转换是在 Swift 的类型管理之外进行的，因此编译器无法确保得到的类型是否确实正确，你必须明确地知道你在做什么。比如：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-text&quot; data-lang=&quot;text&quot;&gt;let arr = NSArray(object: &amp;quot;meow&amp;quot;)
+let str = unsafeBitCast(CFArrayGetValueAtIndex(arr, 0), CFString.self)
+str // “meow”
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;因为 &lt;code&gt;NSArray&lt;/code&gt; 是可以存放任意 &lt;code&gt;NSObject&lt;/code&gt; 对象的，当我们在使用 &lt;code&gt;CFArrayGetValueAtIndex&lt;/code&gt; 从中取值的时候，得到的结果将是一个 &lt;code&gt;UnsafePointer&amp;lt;Void&amp;gt;&lt;/code&gt;。由于我们很明白其中存放的是 &lt;code&gt;String&lt;/code&gt; 对象，因此可以直接将其强制转换为 &lt;code&gt;CFString&lt;/code&gt;。&lt;/p&gt;
+
+&lt;p&gt;关于 &lt;code&gt;unsafeBitCast&lt;/code&gt; 一种更常见的使用场景是不同类型的指针之间进行转换。因为指针本身所占用的的大小是一定的，所以指针的类型进行转换是不会出什么致命问题的。这在与一些 C API 协作时会很常见。比如有很多 C API 要求的输入是 &lt;code&gt;void *&lt;/code&gt;，对应到 Swift 中为 &lt;code&gt;UnsafePointer&amp;lt;Void&amp;gt;&lt;/code&gt;。我们可以通过下面这样的方式将任意指针转换为 UnsafePointer&lt;Void&gt;。&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-text&quot; data-lang=&quot;text&quot;&gt;var count = 100
+var voidPtr = withUnsafePointer(&amp;amp;count, { (a: UnsafePointer&amp;lt;Int&amp;gt;) -&amp;gt; UnsafePointer&amp;lt;Void&amp;gt; in
+    return unsafeBitCast(a, UnsafePointer&amp;lt;Void&amp;gt;.self)
+})
+// voidPtr 是 UnsafePointer&amp;lt;Void&amp;gt;。相当于 C 中的 void *
+
+// 转换回 UnsafePointer&amp;lt;Int&amp;gt;
+var intPtr = unsafeBitCast(voidPtr, UnsafePointer&amp;lt;Int&amp;gt;.self)
+intPtr.memory //100
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;h2&gt;总结&lt;/h2&gt;
+
+&lt;p&gt;Swift 从设计上来说就是以安全作为重要原则的，虽然可能有些啰嗦，但是还是要重申在 Swift 中直接使用和操作指针应该作为最后的手段，它们始终是无法确保安全的。从传统的 C 代码和与之无缝配合的 Objective-C 代码迁移到 Swift 并不是一件小工程，我们的代码库肯定会时不时出现一些和 C 协作的地方。我们当然可以选择使用 Swift 重写部分陈旧代码，但是对于像是安全或者性能至关重要的部分，我们可能除了继续使用 C API 以外别无选择。如果我们想要继续使用那些 API 的话，了解一些基本的 Swift 指针操作和使用的知识会很有帮助。&lt;/p&gt;
+
+&lt;p&gt;对于新的代码，尽量避免使用 &lt;code&gt;Unsafe&lt;/code&gt; 开头的类型，意味着可以避免很多不必要的麻烦。Swift 给开发者带来的最大好处是可以让我们用更加先进的编程思想，进行更快和更专注的开发。只有在尊重这种思想的前提下，我们才能更好地享受这门新语言带来的种种优势。显然，这种思想是不包括到处使用 &lt;code&gt;UnsafePointer&lt;/code&gt; 的 :)&lt;/p&gt;
+</description>
+        <pubDate>Mon, 19 Jan 2015 11:38:21 +0800</pubDate>
+        <link>http://vno.onevcat.com/2015/01/swift-pointer/</link>
+        <guid isPermaLink="true">http://vno.onevcat.com/2015/01/swift-pointer/</guid>
+        
+        <category>能工巧匠集</category>
+        
+        
+      </item>
+    
+      <item>
+        <title>Apple WatchKit 初探</title>
+        <description>&lt;p&gt;&lt;img src=&quot;/assets/images/2014/watchkit-0.png&quot; alt=&quot;&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;随着今天凌晨 Apple 发布了第一版的 Watch Kit 的 API，对于开发者来说，这款新设备的一些更详细的信息也算是逐渐浮出水面。可以说第一版的 WatchKit 开放的功能总体还是令人满意的。Apple 在承诺逐渐开放的方向上继续前进。本来在 WWDC 之后预期 Today Widget 会是各类新颖 app 的舞台以及对 iOS 功能的极大扩展，但是随着像 Launcher 和 PCalc 这些创意型的 Today Widget 接连被下架事件，让开发者也不得不下调对 WatchKit 的预期。但是至少从现在的资料来看，WatchKit 是允许进行复杂交互以及完成一些独立功能的。虽然需要依托于 iPhone app，但是至少能够发挥的舞台和空间要比我原先想象的大不少。&lt;/p&gt;
+
+&lt;p&gt;当然，因为设备本身的无论是电量还是运算能力的限制，在进行 Watch app 开发的时候也还是有很多掣肘。现在 Watch app 仅仅只是作为视图显示和回传用户交互的存在，但是考虑到这是这款设备的第一版 SDK，另外 Apple 也有承诺之后会允许真正运行在 Watch 上的 app 的出现，Apple Watch 和 WatchKit 的未来还是很值得期待的。&lt;/p&gt;
+
+&lt;p&gt;废话不再多，我们来简单看看 WatchKit 的一些基本信息吧。&lt;/p&gt;
+
+&lt;h2&gt;我们能做什么&lt;/h2&gt;
+
+&lt;h3&gt;Watch app 架构&lt;/h3&gt;
+
+&lt;p&gt;首先需要明确的是，在 iOS 系统上，app 本体是核心。所有的运行实体都是依托在本体上的：在 iOS 8 之前这是毋庸置疑的，而在 iOS 8 中添加的各种 Extension 也必须随同 app 本体捆绑，作为 app 的功能的补充。Watch app 虽然也类似于此，我们要针对 Apple Watch 进行开发，首先还是需要建立一个传统的 iOS app，然后在其中添加 Watch App 的 target。在添加之后，会发现项目中多出两个 target：其中一个是 WatchKit 的扩展，另一个是 Watch App。在项目相应的 group 下可以看到，WatchKit Extension 中含有代码 (&lt;code&gt;InterfaceController.h/m&lt;/code&gt; 等)，而 Watch App 里只包含了 &lt;code&gt;Interface.storyboard&lt;/code&gt;。现在暂时看来 Watch App 依然是传统 iOS 设备 app 的扩展和衍生，Apple 估计会采取和 Extension 同样的态度来对待 Watch Kit。而原生可以直接运行在手表上的 app 有消息说 2015 年中后期才可能被允许。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2014/watchkit-1.png&quot; alt=&quot;&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;在应用安装时，负责逻辑部分的 WatchKit Extension 将随 iOS app 的主 target 被一同安装到 iPhone 中，而负责界面部分的 WatchKit App 将会在主程序安装后由 iPhone 检测有没有配对的 Apple Watch，并提示安装到 Apple Watch 中。所以在实际使用时，所有的运算、逻辑以及控制实际上都是在 iPhone 中完成的。在需要界面刷新时，由 iPhone 向 Watch 发送指令进行描画并在手表盘面上显示。反过来，用户触摸手表交互时的信息也由手表传回给 iPhone 并进行处理。而这个过程 WatchKit 会在幕后为我们完成，并不需要开发者操心。我们需要知道的就是，原则上来说，我们应该将界面相关的内容放在 Watch App 的 target 中，而将所有代码逻辑等放到 Extension 里。&lt;/p&gt;
+
+&lt;p&gt;在手表上点击 app 图标运行 Watch App 时，手表将会负责唤醒手机上的 WatchKit Extension。而 WatchKit Extension 和 iOS app 之间的数据交互需求则由 App Groups 来完成，这和 Today Widget 以及其他一些 Extension 是一样的。如果你还没有了解过相关内容，可以参看我之前写过的一篇 &lt;a href=&quot;http://onevcat.com/2014/08/notification-today-widget/&quot;&gt;Today Extension 的教程&lt;/a&gt;。&lt;/p&gt;
+
+&lt;h3&gt;主要类&lt;/h3&gt;
+
+&lt;h4&gt;WKInterfaceController 和生命周期&lt;/h4&gt;
+
+&lt;p&gt;&lt;code&gt;WKInterfaceController&lt;/code&gt; 是 WatchKit 中的 &lt;code&gt;UIViewController&lt;/code&gt; 一样的存在，也会是开发 Watch App 时花时间最多的类。每个 &lt;code&gt;WKInterfaceController&lt;/code&gt; 或者其子类应该对应手表上的一个整屏内容。但是需要记住整个 WatchKit 是独立于 UIKit 而存在的，&lt;code&gt;WKInterfaceController&lt;/code&gt; 是一个直接继承自 &lt;code&gt;NSObject&lt;/code&gt; 的类，并没有像 &lt;code&gt;UIKit&lt;/code&gt; 中 &lt;code&gt;UIResponser&lt;/code&gt; 那样的对用户交互的响应功能和完备的回调。&lt;/p&gt;
+
+&lt;p&gt;不仅在功能上相对 &lt;code&gt;UIViewController&lt;/code&gt; 简单很多，在生命周期上也进行了大幅简化。每个 &lt;code&gt;WKInterfaceController&lt;/code&gt; 对象必然会被调用的生命周期方法有三个，分别是该对象被初始化时的 &lt;code&gt;-initWithContext:&lt;/code&gt;，将要呈现时的 &lt;code&gt;-willActivate&lt;/code&gt; 以及呈现结束后的 &lt;code&gt;-didDeactivate&lt;/code&gt;。同样类比 &lt;code&gt;UIViewController&lt;/code&gt; 的话，可以将它们理解为分别对应 &lt;code&gt;-viewDidLoad&lt;/code&gt;，&lt;code&gt;viewWillAppear:&lt;/code&gt; 以及 &lt;code&gt;-viewDidDisappear:&lt;/code&gt;。虽然看方法名和实际使用上可能你会认为 &lt;code&gt;-initWithContext:&lt;/code&gt; 应该对应 &lt;code&gt;UIViewController&lt;/code&gt; 的 &lt;code&gt;init&lt;/code&gt; 或者 &lt;code&gt;initWithCoder:&lt;/code&gt; 这样的方法，但是事实上在 &lt;code&gt;-initWithContext:&lt;/code&gt; 时 &lt;code&gt;WKInterfaceController&lt;/code&gt; 中的“视图元素” (请注意这里我加上了引号，因为它们不是真正的视图，稍后会再说明) 都已经初始化完毕可用，这其实和 &lt;code&gt;-viewDidLoad&lt;/code&gt; 中的行为更加相似。&lt;/p&gt;
+
+&lt;p&gt;我们一般在 &lt;code&gt;-initWithContext:&lt;/code&gt; 和 &lt;code&gt;-willActivate&lt;/code&gt; 中配置“视图元素”的属性，在 &lt;code&gt;-didDeactivate&lt;/code&gt; 中停用像是 &lt;code&gt;NSTimer&lt;/code&gt; 之类的会 hold 住 &lt;code&gt;self&lt;/code&gt; 的对象。需要特别注意的是，在 &lt;code&gt;-didDeactivate&lt;/code&gt; 中对“视图元素”属性进行设置是无效的，因为当前的 &lt;code&gt;WKInterfaceController&lt;/code&gt; 已经非活跃。&lt;/p&gt;
+
+&lt;h4&gt;WKInterfaceObject 及其子类&lt;/h4&gt;
+
+&lt;p&gt;&lt;code&gt;WKInterfaceObject&lt;/code&gt; 负责具体的界面元素设置，包括像是 &lt;code&gt;WKInterfaceButton&lt;/code&gt;，&lt;code&gt;WKInterfaceLabel&lt;/code&gt; 或 &lt;code&gt;WKInterfaceImage&lt;/code&gt; 这类物件，也就是我们上面所提到的“视图元素”。可能一开始会产生错觉，觉得 &lt;code&gt;WKInterfaceObject&lt;/code&gt; 应该对应 &lt;code&gt;UIView&lt;/code&gt;，但其实上并非如此。&lt;code&gt;WKInterfaceObject&lt;/code&gt; 只是 WatchKit 的实际的 View 的一个在 Watch Extension 端的代理，而非 View 本身。Watch App 中实际展现和渲染在屏幕上的 view 对于代码来说是非直接可见的，我们只能在 Extension target 中通过对应的代理对象对属性进行设置，然后在每个 run loop 需要刷新 UI 时由 WatchKit 将新的属性值从手机中传递给手表中的 Watch App 并进行界面刷新。&lt;/p&gt;
+
+&lt;p&gt;反过来，手表中的实际的 view 想要将用户交互事件传递给 iPhone 也需要通过 &lt;code&gt;WKInterfaceObject&lt;/code&gt; 代理进行。每个可交互的 &lt;code&gt;WKInterfaceObject&lt;/code&gt; 子类都对应了一个 action，比如 button 对应点击事件，switch 对应开或者关的状态，slider 对应一个浮点数值表明选取值等等。关联这些事件也很简单，直接从 StoryBoard 文件中 Ctrl 拖拽到实现中就能生成对应的事件了。虽然 UI 资源文件和代码实现是在不同的 target 中的，但是在 Xcode 中的协作已然天衣无缝。&lt;/p&gt;
+
+&lt;p&gt;Watch App 采取的布局方式和 iOS app 完全不同。你无法自由指定某个视图的具体坐标，当然也不能使用像 AutoLayout 或者 Size Classes 这样的灵活的界面布局方案。WatchKit 提供的布局可能性和灵活性相对较小，你只能在以“行”为基本单位的同时通过 group 来在行内进行“列”布局。这带来了相对简单的布局实现，当然，同时也是对界面交互的设计的一种挑战。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2014/watchkit-2.png&quot; alt=&quot;&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;另外值得一提的是，随着 WatchKit 的出现及其开发方式的转变，&lt;a href=&quot;http://onevcat.com/2013/12/code-vs-xib-vs-storyboard/&quot;&gt;代码写 UI 还是使用 StoryBoard&lt;/a&gt; 这个争论了多年的话题可以暂时落下帷幕了。针对 Watch 的开发不能使用代码的方式。首先，所有的 &lt;code&gt;WKInterfaceObject&lt;/code&gt; 对象都必须要设计的时候经由 StoryBoard 进行添加，运行时我们无法再向界面上添加或者移除元素 (如果有移除需要的，可以使用隐藏)；其次 &lt;code&gt;WKInterfaceObject&lt;/code&gt; 与布局相关的某些属性，比如行高行数等，不能够在运行时进行变更和设定。基本来说在运行时我们只能够改变视图的内容，以及通过隐藏某些视图元素来达到有限地改变布局 (其他视图元素会试图填充被隐藏的元素)。&lt;/p&gt;
+
+&lt;p&gt;总之，代码进行 UI 编写的传统，在 Apple 的不断努力下，于 WatchKit 发布的今天，被正式宣判了死刑。&lt;/p&gt;
+
+&lt;h4&gt;Table 和 Context Menu&lt;/h4&gt;
+
+&lt;p&gt;大部分 &lt;code&gt;WKInterfaceObject&lt;/code&gt; 子类都很直接简单，但是有两个我想要单独说一说，那就是 &lt;code&gt;WKInterfaceTable&lt;/code&gt; 和 &lt;code&gt;WKInterfaceMenu&lt;/code&gt;。&lt;code&gt;UITableView&lt;/code&gt; 大家都很熟悉了，在 WatchKit 中的 &lt;code&gt;WKInterfaceTable&lt;/code&gt; 虽然也是用来展示一组数据，但是因为 WatchKit API 的数据传输的特点，使用上相较 &lt;code&gt;UITableView&lt;/code&gt; 有很大不同和简化。首先不存在 DataSource 和 Delegate，&lt;code&gt;WKInterfaceTable&lt;/code&gt; 中需要呈现的数据数量直接由其实例方法 &lt;code&gt;-setNumberOfRows:withRowType:&lt;/code&gt; 进行设定。在进行设定后，使用 &lt;code&gt;-rowControllerAtIndex:&lt;/code&gt; 枚举所有的 &lt;code&gt;rowController&lt;/code&gt; 进行设定。这里的 &lt;code&gt;rowController&lt;/code&gt; 是在 StoryBoard 中所设定的相当于 &lt;code&gt;UITableViewCell&lt;/code&gt; 的东西，只不过和其他 &lt;code&gt;WKInterfaceObject&lt;/code&gt; 一样，它是直接继承自 &lt;code&gt;NSObject&lt;/code&gt; 的。你可以通过自定义 &lt;code&gt;rowController&lt;/code&gt; 并连接 StoryBoard 的元素，并在取得 &lt;code&gt;rowController&lt;/code&gt; 对其进行设定，即可完成 table 的显示。代码大概是这样的：&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-text&quot; data-lang=&quot;text&quot;&gt;//  MyRowController.swift
+import Foundation
+import WatchKit
+
+class MyRowController: NSObject {
+    @IBOutlet weak var label: WKInterfaceLabel!
+}
+
+//  InterfaceController.swift
+import WatchKit
+import Foundation
+
+class InterfaceController: WKInterfaceController {
+
+    @IBOutlet weak var table: WKInterfaceTable!
+    let data = [&amp;quot;Index 0&amp;quot;,&amp;quot;Index 1&amp;quot;,&amp;quot;Index 2&amp;quot;]
+
+    override init(context: AnyObject?) {
+        // Initialize variables here.
+        super.init(context: context)
+
+        // Configure interface objects here.
+        NSLog(&amp;quot;%@ init&amp;quot;, self)
+
+        // 注意需要在 StoryBoard 中设置 myRowControllerType
+        // 类似 cell 的 reuse id
+        table.setNumberOfRows(data.count, withRowType: &amp;quot;myRowControllerType&amp;quot;)
+        for (i, value) in enumerate(data) {
+            if let rowController = table.rowControllerAtIndex(i) as? MyRowController {
+                rowController.label.setText(value)
+            }
+        }
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;&lt;img src=&quot;/assets/images/2014/watchkit-3.png&quot; alt=&quot;&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;对于点击事件，并没有一个实际的 delegate 存在，而是类似于其他 &lt;code&gt;WKInterfaceObject&lt;/code&gt; 那样通过 action 将点击了哪个 row 作为参数发送回 &lt;code&gt;WKInterfaceController&lt;/code&gt; 进行处理。&lt;/p&gt;
+
+&lt;p&gt;另一个比较好玩的是 Context Menu，这是 WatchKit 独有的交互，在 iOS 中并不存在。在任意一个 &lt;code&gt;WKInterfaceController&lt;/code&gt; 界面中，长按手表屏幕，如果当前 &lt;code&gt;WKInterfaceController&lt;/code&gt; 中存在上下文菜单的话，就会尝试呼出找这个界面对应的 Context Menu。这个菜单最多可以提供四个按钮，用来针对当前环境向用户征询操作。因为手表屏幕有限，在信息显示的同时再放一些交互按钮是挺不现实的一件事情，也会很丑。而上下文菜单很好地解决了这个问题，相信长按呼出交互菜单这个操作会成为今后 Watch App 的一个很标准的交互操作。&lt;/p&gt;
+
+&lt;p&gt;添加 Context Menu 非常简单，在 StoryBoard 里向 &lt;code&gt;WKInterfaceController&lt;/code&gt; 中添加一个 Menu，并在这个 Menu 里添加对应的 MenuItem 就行了。在 &lt;code&gt;WKInterfaceController&lt;/code&gt; 我们也有对应的 API 来在运行时根据上下文环境进行 MenuItem 的添加 (这是少数几个允许我们在运行时添加元素的方法之一)。&lt;/p&gt;
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-text&quot; data-lang=&quot;text&quot;&gt;-addMenuItemWithItemIcon:title:action:
+-addMenuItemWithImageNamed:title:action:
+-addMenuItemWithImage:title:action:
+-clearAllMenuItems
+&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+&lt;p&gt;&lt;img src=&quot;/assets/images/2014/watchkit-4.png&quot; alt=&quot;&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;但是 Menu 和 MenuItem 对应的类 &lt;code&gt;WKInterfaceMenu&lt;/code&gt; 和 &lt;code&gt;WKInterfaceMenuItem&lt;/code&gt; 我们是没有办法拿到的。没错，它们甚至都没有存在于文档里 :(&lt;/p&gt;
+
+&lt;h3&gt;基础导航&lt;/h3&gt;
+
+&lt;p&gt;&lt;code&gt;WKInterfaceController&lt;/code&gt; 的内建的导航关系基本上分为三类。首先是像 &lt;code&gt;UINavigationController&lt;/code&gt; 控制的类似栈的导航方式。相关的 API 有 &lt;code&gt;-pushControllerWithName:context:&lt;/code&gt;，&lt;code&gt;-popController&lt;/code&gt; 以及 &lt;code&gt;-popToRootController&lt;/code&gt;。后两个我想不必太多解释，对于第一个方法，我们需要使用目标 controller 的 &lt;code&gt;Identifier&lt;/code&gt; 字符串 (没有你只能在 StoryBoard 里进行设置) 进行创建。&lt;code&gt;context&lt;/code&gt; 参数也会被传递到目标 controller 的 &lt;code&gt;-initWithContext:&lt;/code&gt; 中，所以你可以以此来在 controller 中进行数据传递。&lt;/p&gt;
+
+&lt;p&gt;另一种是我们大家熟悉的 modal 形式，对应 API 是 &lt;code&gt;-presentControllerWithName:context:&lt;/code&gt; 和 &lt;code&gt;-dismissController&lt;/code&gt;。对于这种导航，和 &lt;code&gt;UIKit&lt;/code&gt; 中的不同之处就是在目标 controller 中会默认在左上角加上一个 Cancel 按钮，点击的话会直接关闭被 present 的 controller。我只想说 Apple 终于想通了，每个 modal 出来的 controller 都是需要关闭的这个事实...&lt;/p&gt;
+
+&lt;p&gt;最后一种导航方式是类似 &lt;code&gt;UIPageController&lt;/code&gt; 的分页式导航。在 iOS app 中，在应用第一次开始时的教学模块中这种导航方式非常常见，而在 WatchKit 里可以说得到了发扬光大。事实上我个人也认为这会是 WatchKit 里最符合使用习惯的导航方式。在 WatchKit 上的 page 导航可能会和 iOS app 的 Tab 导航所提供的功能相对应。&lt;/p&gt;
+
+&lt;p&gt;在实现上，page 导航需要在 StoryBoard 中用 segue 的方式将不同 page 进行连接，新添加的 &lt;code&gt;next page&lt;/code&gt; segue 就是干这个的：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/images/2014/watchkit-5.png&quot; alt=&quot;&quot;&gt;&lt;/p&gt;
+
+&lt;p&gt;另外 modal 导航的另一个 API &lt;code&gt;-presentControllerWithNames:contexts:&lt;/code&gt; 接受复数个的 &lt;code&gt;names&lt;/code&gt; 和 &lt;code&gt;context&lt;/code&gt;，通过这种方式 modal 呼出的复数个 Controller 也将以 page 导航方式呈现。&lt;/p&gt;
+
+&lt;p&gt;当然，作为 StoryBoard 的经典使用方式，modal 和 push 的导航方式也是可以在 StoryBoard 中通过 segue 来实现的。同时 WatchKit 也为 segue 的方式提供了必要的 API。&lt;/p&gt;
+
+&lt;h3&gt;一些界面实践&lt;/h3&gt;
+
+&lt;p&gt;因为整个架构和 &lt;code&gt;UIKit&lt;/code&gt; 完全不同，所以很多之前的实践是无法直接搬到 WatchKit App 中的。&lt;/p&gt;
+
+&lt;h4&gt;图像处理&lt;/h4&gt;
+
+&lt;p&gt;在 &lt;code&gt;UIKit&lt;/code&gt; 中我们显示图片一般使用 &lt;code&gt;UIImageView&lt;/code&gt;，然后为其 &lt;code&gt;image&lt;/code&gt; 属性设置一个创建好的 &lt;code&gt;UIImage&lt;/code&gt; 对象。而对于 WatchKit 来说，最佳实践是将图片存放在 Watch App 的 target 中 (也就是 StoryBoard 的那个 target)，在对 &lt;code&gt;WKInterfaceImage&lt;/code&gt; 进行图像设置时，尽量使用它的 &lt;code&gt;-setImageNamed:&lt;/code&gt; 方法。这个方法将只会把图像名字通过手机传递到手表，然后由手表在自己的 bundle 中寻找图片并加载，是最快的途径。注意我们的代码是运行在于手表的 Watch App 不同的设备上的，虽然我们也可以先通过 &lt;code&gt;UIImage&lt;/code&gt; 的相关方法生成 &lt;code&gt;UIImage&lt;/code&gt; 对象，然后再用 &lt;code&gt;-setImage:&lt;/code&gt; 或者 &lt;code&gt;-setImageData:&lt;/code&gt; 来设置手表上的图片，但是这样的话我们就需要将图片放到 Extension 的 target 中，并且需要将图片的数据通过蓝牙传到手表，一般来说这会造成不可忽视的延迟，会很影响体验。&lt;/p&gt;
+
+&lt;p&gt;如果对于某些情况下，我们只能在 Extension 的 target 中获得图片 (比如从网络下载或者代码动态生成等)，并且需要重复使用的话，最好用 &lt;code&gt;WKInterfaceDevice&lt;/code&gt; 的 &lt;code&gt;-addCachedImage:name:&lt;/code&gt; 方法将其缓存到手表中。这样，当我们之后再使用这张图片的时候就可以直接通过 &lt;code&gt;-setImageNamed:&lt;/code&gt; 来快速地从手表上生成并使用了。每个 app 的 cache 的尺寸大约是 20M，超过的话 WatchKit 将会从最老的数据开始删除，以腾出空间存储新的数据。&lt;/p&gt;
+
+&lt;h4&gt;动画&lt;/h4&gt;
+
+&lt;p&gt;因为无法拿到实际的视图元素，只有 &lt;code&gt;WKInterfaceObject&lt;/code&gt; 这样的代理对象，以及布局系统的限制，所以复杂的动画，尤其是 &lt;code&gt;UIView&lt;/code&gt; 系列或者是 &lt;code&gt;CALayer&lt;/code&gt; 系列的动画是无法实现的。现在看来唯一可行的是帧动画，通过为 &lt;code&gt;WKInterfaceImage&lt;/code&gt; 设置包含多个 image 的图像，或者是通过计时器定时替换图像的话，可以实现帧动画。虽然 Apple 自己的例子也通过这种方法实现了动画，但是对于设备的存储空间和能耗都可能会是挑战，还需要实际拿到设备以后进行实验和观察。&lt;/p&gt;
+
+&lt;h4&gt;其他 Cocoa Touch 框架的使用&lt;/h4&gt;
+
+&lt;p&gt;Apple 建议最好不要使用那些需要 prompt 用户许可的特性，比如 CoreLocation 定位等。因为实际的代码是在手机上运行的，这类许可也会在手机上弹出，但是用户并不一定正好在看手机，所以很可能造成体验下降。另外大部分后台运行权限也是不建议的。&lt;/p&gt;
+
+&lt;p&gt;对于要获取这些数据和权限，Apple 建议还是在 iOS app 中完成，并通过 App Groups 进行数据共享，从而在 Watch Extension 中拿到这些数据。&lt;/p&gt;
+
+&lt;h4&gt;代码分享&lt;/h4&gt;
+
+&lt;p&gt;因为现在一个项目会有很多不同的 target，所以使用 framework 的方式封装不同 target 的公用部分的代码，而只在各 target 中实现界面相关的代码应该是必行的了。这么做的优点不仅是可以减少代码重复，也会使代码测试和品质得到提升。如果还没有进行逻辑部分的框架化和测试分离的话，在实现像各类 Extension 或者 Watch App 时可能会遇到非常多的麻烦。&lt;/p&gt;
+
+&lt;p&gt;因为如果原有 app 有计划进行扩展推出各种 Extension 的话，将逻辑代码抽离并封装为 framework 应该是优先级最高的工作。另外新开的项目如果没有特殊原因，也强烈建议使用 framework 来组织通用代码。&lt;/p&gt;
+
+&lt;h3&gt;Glance 和 Notification&lt;/h3&gt;
+
+&lt;p&gt;除了 Watch App 本体以外，Glance 和手表的 Notification 也是重要的使用情景。Notification 虽然概念上比较简单，但是相对于 iOS 的通知来说是天差地别。WatchKit 的通知允许开发者自行构建界面，我们可以通过 payload 设置比较复杂和带有更多信息的通知，包括图像，大段文字甚至可以交互的按钮，而不是像 iOS 上那样被限制在文字和一个对话框内。首先无论是通过 Local 还是 Remote 进行的通知发送会先到达 iPhone，然后再由 iPhone 根据内容判断是否转发到手表。WatchKit App 接收到通知后先会显示一个简短的通知，告诉用户这个 app 有一个通知。如果用户对通知的内容感兴趣的话，可以点击或者抬手观看，这样由开发者自定义的长版本的通知就会显现。&lt;/p&gt;
+
+&lt;p&gt;Glance 是 WatchKit 的新概念，它允许 Watch App 展示一个布局固定的 &lt;code&gt;WKInterfaceController&lt;/code&gt; 页面。它和 Watch App 本体相对地位相当于 iOS 上的 Today Widget 和 iOS app 本身的地位，是作为手表上的 app 的最重要的信息展示出现的。Glance 正如其名，是短时存在的提醒，不能存在可交互的元素。不过如果用户点击 Glance 页面的话，是可以启动到 Watch App 的。现在关于 Glance 本身如何启动和呈现还不是很明确，猜测是某种类似 Today Widget 的呈现方式？(比如按下两次表侧面的旋钮)&lt;/p&gt;
+
+&lt;h2&gt;疑问和改进方向&lt;/h2&gt;
+
+&lt;p&gt;WatchKit 总体令人满意，提供的 API 和开发环境已经足够开发者作出一些有趣的东西。但是有几个现在看来很明显的限制和希望能加强的方向。&lt;/p&gt;
+
+&lt;p&gt;首先是从现在来看 WatchKit 并没有提供任何获取设备传感信息的 API。不论是心跳、计步或者是用户是否正在佩戴 Watch 的信息我们都是拿不到的，这限制了很多数据收集和监视的健康类 app 的制作。如果希望请求数据，还是不得不转向使用 HealthKit。但是随着 iPhone 6 和 6s 的大屏化，在运动时携带 iPhone 的人可以说是变少了。如果 Watch 不能在没有 iPhone 配对的情况下收集记录，并在之后和 iPhone 连接后将数据回传的话，那 Apple 的健康牌就失败了一大半。相信 Apple 不会放过这种把用户捆绑的机会...不过如果第三方应用能实时获取用户的佩戴状况的话，相信会有很多有意思的应用出现。&lt;/p&gt;
+
+&lt;p&gt;另外作为在发布会上鼓吹的交互革命的旋钮和触感屏幕，现在看来并没有开放任何 API 供开发者使用，所以我们无法得知用户旋转了手表旋钮这个重要的交互事件。现在看来我们能获取的操作仅只是用户点击屏幕上的按钮或者拖动滑条这个层级，从这个角度来说，现在的 WatchKit 还远没达到可以颠覆移动应用的地步。&lt;/p&gt;
+
+&lt;p&gt;希望之后 Apple 会给我们带来其他的好消息吧。&lt;/p&gt;
+
+&lt;p&gt;总之，舞台已经搭好，之后唱什么戏，就要看我们的了。&lt;/p&gt;
+</description>
+        <pubDate>Wed, 19 Nov 2014 16:40:22 +0800</pubDate>
+        <link>http://vno.onevcat.com/2014/11/watch-kit/</link>
+        <guid isPermaLink="true">http://vno.onevcat.com/2014/11/watch-kit/</guid>
+        
+        <category>能工巧匠集</category>
+        
+        
+      </item>
+    
+  </channel>
+</rss>
