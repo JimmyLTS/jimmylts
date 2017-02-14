@@ -5,6 +5,8 @@ date: 2012-04-22 23:18:44.000000000 +09:00
 tags: 能工巧匠集
 ---
 
+【转载】原作：onevcat [https://onevcat.com/2012/04/objective-c-runtime/](https://onevcat.com/2012/04/objective-c-runtime/)
+
 Objective-C具有相当多的动态特性，基本的，也是经常被提到和用到的有动态类型（Dynamic typing），动态绑定（Dynamic binding）和动态加载（Dynamic loading）。
 
 这些动态特性都是在Cocoa程序开发时非常常用的语言特性，而在这之后，OC在底层也提供了相当丰富的运行时的特性，比如枚举类属性方法、获取方法实现等等。虽然在平常的Cocoa开发中这些较底层的运行特性基本用不着，但是在某些情况下如果你知道这些特性并合理加以运用的话，往往能事半功倍～

@@ -5,6 +5,8 @@ date: 2013-08-31 00:57:34.000000000 +09:00
 tags: 能工巧匠集
 ---
 
+【转载】原作：onevcat [https://onevcat.com/2013/08/shader-tutorial-2/](https://onevcat.com/2013/08/shader-tutorial-2/)
+
 ![Unity Shader教程](/assets/images/2013/shader-tutorial2-light.jpg)
 
 ## 关于本系列

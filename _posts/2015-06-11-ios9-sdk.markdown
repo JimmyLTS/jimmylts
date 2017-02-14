@@ -5,6 +5,8 @@ date: 2015-06-11 10:24:16.000000000 +09:00
 tags: 能工巧匠集
 ---
 
+【转载】原作：onevcat []()
+
 ![](/assets/images/2015/wwdc15.jpg)
 
 本文为InfoQ中文站特供稿件，[首发地址](http://www.infoq.com/cn/news/2015/06/ios9-sdk)。如需转载，请与InfoQ中文站联系。

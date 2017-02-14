@@ -4,6 +4,9 @@ title: WWDC 2014 Session笔记 - iOS 通知中心扩展制作入门
 date: 2014-08-03 11:50:39.000000000 +09:00
 tags: 能工巧匠集
 ---
+
+【转载】原作：onevcat []()
+
 本文是我的 [WWDC 2014 笔记](http://onevcat.com/2014/07/developer-should-know-about-ios8/) 中的一篇，涉及的 Session 有
 
 * [Creating Extensions for iOS and OS X, Part 1](http://devstreaming.apple.com/videos/wwdc/2014/205xxqzduadzo14/205/205_hd_creating_extensions_for_ios_and_os_x,_part_1.mov?dl=1)

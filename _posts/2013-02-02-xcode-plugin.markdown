@@ -5,6 +5,8 @@ date: 2013-02-02 00:32:39.000000000 +09:00
 tags: 能工巧匠集
 ---
 
+【转载】原作：onevcat [https://onevcat.com/2013/02/xcode-plugin/](https://onevcat.com/2013/02/xcode-plugin/)
+
 本文欢迎转载，但烦请保留此行出处信息：[http://www.onevcat.com/2013/02/xcode-plugin/](http://www.onevcat.com/2013/02/xcode-plugin/)
 
 ## 2014.5.4更新

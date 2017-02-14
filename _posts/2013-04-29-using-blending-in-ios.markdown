@@ -5,6 +5,8 @@ date: 2013-04-29 00:41:33.000000000 +09:00
 tags: 能工巧匠集
 ---
 
+【转载】原作：onevcat [https://onevcat.com/2013/04/using-blending-in-ios/](https://onevcat.com/2013/04/using-blending-in-ios/)
+
 ![使用Blend处理图片颜色](/assets/images/2013/blend_title.png)
 
 最近对`Core Animation`和`Core Graphics`的内容东西比较感兴趣，自己之前也在这块相对薄弱，趁此机会也想补习一下这块的内容，所以之后几篇可能都会是对CA和CG学习的记录的文章。

@@ -4,6 +4,9 @@ title: WWDC15 Session笔记 - 30 分钟开发一个简单的 watchOS 2 app
 date: 2015-08-03 23:23:34.000000000 +09:00
 tags: 能工巧匠集
 ---
+
+【转载】原作：onevcat []()
+
 Apple Watch 和 watchOS 第一代产品只允许用户在 iPhone 设备上进行计算，然后将结果传输到手表上进行显示。在这个框架下，手表充当的功能在很大程度上只是手机的另一块小一些的显示器。而在 watchOS 2 中，Apple 开放了在手表端直接进行计算的能力，一些之前无法完成的 app 现在也可以进行构建了。本文将通过一个很简单的天气 app 的例子，讲解一下 watchOS 2 中新引入的一些特性的使用方法。
 
 本文是我的 [WWDC15 笔记](http://onevcat.com/2015/06/ios9-sdk/)中的一篇，在 WWDC15 中涉及到 watchOS 2 的相关内容的 session 非常多，本文所参考的有：

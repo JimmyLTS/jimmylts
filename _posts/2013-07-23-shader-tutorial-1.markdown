@@ -5,6 +5,8 @@ date: 2013-07-23 00:54:38.000000000 +09:00
 tags: 能工巧匠集
 ---
 
+【转载】原作：onevcat [https://onevcat.com/2013/07/shader-tutorial-1/](https://onevcat.com/2013/07/shader-tutorial-1/)
+
 ![Unity Shader教程](/assets/images/2013/shader-tutorial-banner.jpg)
 
 ## 动机

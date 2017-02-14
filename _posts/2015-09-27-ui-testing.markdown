@@ -4,6 +4,9 @@ title: WWDC15 Session笔记 - Xcode 7 UI 测试初窥
 date: 2015-09-27 20:58:47.000000000 +09:00
 tags: 能工巧匠集
 ---
+
+【转载】原作：onevcat []()
+
 ![](/assets/images/2015/ui-testing-title.png)
 
 Unit Test 在 iOS 开发中已经有足够多的讨论了。Objective-C 时代除了 Xcode 集成的 XCTest 以外，还有很多的测试相关的工具链可以使用，比如专注于提供 Mock 和 Stub 的 [OCMock](http://ocmock.org)，使用行为驱动测试的 [Kiwi](https://github.com/kiwi-bdd/Kiwi) 或者 [Specta](https://github.com/specta/specta) 等等。在 Swift 中，我们可以继续使用 XCTest 来进行测试，而 Swift 的 mock 和 stub 的处理，我们甚至不需要再借助于第三方框架，而使用 Swift 自身可以在方法中内嵌类型的特性来完成。关于这方面的内容，可以参看下 NSHipster [这篇文章](http://nshipster.com/xctestcase/)里关于 Mocking in Swift 部分的内容。

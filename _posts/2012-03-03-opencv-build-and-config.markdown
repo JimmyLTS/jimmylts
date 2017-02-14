@@ -5,9 +5,7 @@ date: 2012-03-03 23:06:23.000000000 +09:00
 tags: 能工巧匠集
 ---
 
-转载本文请保留以下原作者信息:
-
-原作：OneV's Den [http://www.onevcat.com/2012/03/opencv-build-and-config/](http://www.onevcat.com/2012/03/opencv-build-and-config/)
+【转载】原作：onevcat [http://www.onevcat.com/2012/03/opencv-build-and-config/](http://www.onevcat.com/2012/03/opencv-build-and-config/)
 
 ## 2014.5.3 更新
 

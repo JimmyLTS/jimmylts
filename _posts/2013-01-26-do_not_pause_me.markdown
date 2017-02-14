@@ -5,6 +5,7 @@ date: 2013-01-26 00:23:34.000000000 +09:00
 tags: 能工巧匠集
 ---
 
+【转载】原作：onevcat [https://onevcat.com/2013/01/do_not_pause_me/](https://onevcat.com/2013/01/do_not_pause_me/)
 
 ![](http://www.onevcat.com/wp-content/uploads/2013/01/big副本.png)
 

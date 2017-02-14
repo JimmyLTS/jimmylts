@@ -5,6 +5,8 @@ date: 2012-03-24 23:10:06.000000000 +09:00
 tags: 南箕北斗集
 ---
 
+【转载】原作：onevcat [https://onevcat.com/2012/03/appcode/](https://onevcat.com/2012/03/appcode/)
+
 ###Xcode or AppCode
 
 近年来随着iOS设备和Mac发展，Objective-C（以下简写为OC）进步神速，但是这个世界上并没有多少OC的IDE。要说集成了Mac和iOS SDK的OC开发套件，最为常用和普及的一定是Apple自家的Xcode了。真心说来Xcode是一个很棒的IDE，它具备了作为一个优秀IDE所应该拥有的一切要素。其他的OC IDE环境从来不是主流，但是其中却也不乏优秀者，[JetBrains的AppCode](http://www.jetbrains.com/objc/)便是佼佼者之一。

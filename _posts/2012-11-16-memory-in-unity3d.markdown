@@ -5,6 +5,8 @@ date: 2012-11-16 00:16:54.000000000 +09:00
 tags: 能工巧匠集
 ---
 
+【转载】原作：onevcat [https://onevcat.com/2012/11/memory-in-unity3d/](https://onevcat.com/2012/11/memory-in-unity3d/)
+
 ![](http://www.onevcat.com/wp-content/uploads/2012/11/unity-technologies-870x531.jpg)
 
 本文欢迎转载，但烦请保留此行出处信息：[http://www.onevcat.com/2012/11/memory-in-unity3d/](http://www.onevcat.com/2012/11/memory-in-unity3d/)

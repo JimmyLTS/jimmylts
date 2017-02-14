@@ -4,6 +4,9 @@ title: Apple WatchKit 初探
 date: 2014-11-19 17:40:22.000000000 +09:00
 tags: 能工巧匠集
 ---
+
+【转载】原作：onevcat []()
+
 ![](/assets/images/2014/watchkit-0.png)
 
 随着今天凌晨 Apple 发布了第一版的 Watch Kit 的 API，对于开发者来说，这款新设备的一些更详细的信息也算是逐渐浮出水面。可以说第一版的 WatchKit 开放的功能总体还是令人满意的。Apple 在承诺逐渐开放的方向上继续前进。本来在 WWDC 之后预期 Today Widget 会是各类新颖 app 的舞台以及对 iOS 功能的极大扩展，但是随着像 Launcher 和 PCalc 这些创意型的 Today Widget 接连被下架事件，让开发者也不得不下调对 WatchKit 的预期。但是至少从现在的资料来看，WatchKit 是允许进行复杂交互以及完成一些独立功能的。虽然需要依托于 iPhone app，但是至少能够发挥的舞台和空间要比我原先想象的大不少。

@@ -5,6 +5,8 @@ date: 2015-03-27 18:56:08.000000000 +09:00
 tags: 能工巧匠集
 ---
 
+【转载】原作：onevcat []()
+
 ![cross-platform](/assets/images/2015/cross-platform.png)
 
 这篇文章主要想谈谈最近又刮起的移动开发跨平台之风，并着重介绍和对比一下像是 [Xamarin](https://xamarin.com)，[NativeScript](https://www.nativescript.org) 和 [React Native](http://facebook.github.io/react-native/) 之类的东西。不会有特别深入的技术讨论，大家可以当作一篇科普类的文章来看。

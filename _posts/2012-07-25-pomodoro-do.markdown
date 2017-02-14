@@ -5,6 +5,8 @@ date: 2012-07-25 23:50:56.000000000 +09:00
 tags: 南箕北斗集
 ---
 
+【转载】原作：onevcat [https://onevcat.com/2012/07/pomodoro-do/](https://onevcat.com/2012/07/pomodoro-do/)
+
 ![](http://pomo.onevcat.com/img/Icon-50.png")
 
 由于完全是自己完成的应用啦，所以详细介绍就写的偏向广告一点吧～欢迎大家购买使用，并给我提意见哦～我会不断完善这款app的。

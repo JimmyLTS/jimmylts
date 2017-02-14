@@ -4,6 +4,9 @@ title: WWDC 2014 Session笔记 - 可视化开发，IB 的新时代
 date: 2014-10-25 00:02:07.000000000 +09:00
 tags: 能工巧匠集
 ---
+
+【转载】原作：onevcat []()
+
 本文是我的 [WWDC 2014 笔记](http://onevcat.com/2014/07/developer-should-know-about-ios8/) 中的一篇，涉及的 Session 有
 
 * [What's New in Xcode 6](http://devstreaming.apple.com/videos/wwdc/2014/401xxfkzfrjyb93/401/401_whats_new_in_xcode_6.pdf?dl=1)

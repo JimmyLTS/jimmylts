@@ -5,6 +5,8 @@ date: 2012-06-04 23:30:00.000000000 +09:00
 tags: 能工巧匠集
 ---
 
+【转载】原作：onevcat [https://onevcat.com/2012/06/arc-hand-by-hand/](https://onevcat.com/2012/06/arc-hand-by-hand/)
+
 ![Revolution of Objective-c](/assets/images/2012/arctitle.png)
 
 本文部分实例取自iOS 5 Toturail一书中关于ARC的[教程和公开内容](http://www.raywenderlich.com/5677/beginning-arc-in-ios-5-part-1)，仅用于技术交流和讨论。请不要将本文的部分或全部内容用于商用，谢谢合作。

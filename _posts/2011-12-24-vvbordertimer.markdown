@@ -4,7 +4,8 @@ title: VVBorderTimer
 date: 2011-12-24 22:04:43.000000000 +09:00
 tags: 能工巧匠集
 ---
-GitHub 链接: [https://github.com/onevcat/VVBorderTimerView](https://github.com/onevcat/VVBorderTimerView)
+
+【转载】原作：onevcat [https://onevcat.com/2011/12/vvbordertimer/](https://onevcat.com/2011/12/vvbordertimer/)
 
 ### 是什么
 

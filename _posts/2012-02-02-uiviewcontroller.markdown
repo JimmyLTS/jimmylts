@@ -6,8 +6,7 @@ tags: 能工巧匠集
 ---
 ![](http://www.onevcat.com/wp-content/uploads/2012/02/vc.jpg)
 
-转载本文请保留以下原作者信息:
-原作：OneV [http://www.onevcat.com/2012/02/uiviewcontroller/](http://www.onevcat.com/2012/02/uiviewcontroller/)
+【转载】原作：onevcat [http://www.onevcat.com/2012/02/uiviewcontroller/](http://www.onevcat.com/2012/02/uiviewcontroller/)
 
 ## 什么是UIViewController的误用
 

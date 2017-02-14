@@ -5,6 +5,8 @@ date: 2016-02-25 11:32:24.000000000 +09:00
 tags: 能工巧匠集
 ---
 
+【转载】原作：onevcat []()
+
 ![](https://onevcat.com/assets/images/2016/taylor-swift.jpg)
 
 本文首发在 CSDN《程序员》杂志，订阅地址 [http://dingyue.programmer.com.cn/](http://dingyue.programmer.com.cn/)。

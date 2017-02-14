@@ -6,9 +6,8 @@ tags: 能工巧匠集
 ---
 <a href="http://www.onevcat.com/wp-content/uploads/2012/02/ios.jpg"><img class="aligncenter size-full wp-image-673" title="ios" src="http://www.onevcat.com/wp-content/uploads/2012/02/ios.jpg" alt=""/></a>
 
-转载本文请保留以下原作者信息:
-原作：OneV's Den
-<a href="http://www.onevcat.com/2012/02/iosversion/">http://www.onevcat.com/2012/02/iosversion/</a>
+【转载】原作：onevcat [http://www.onevcat.com/2012/02/iosversion/](http://www.onevcat.com/2012/02/iosversion/)
+
 <h2>兼容性，开发者之殇</h2>
 兼容性问题是全世界所有开发这面临的最头疼的问题之一，这句话不会有开发者会反驳。往昔的Windows Vista的升级死掉一批应用的惨状历历在目，而如今火热的移动互联网平台上类似的问题也层出不穷。Andriod的开源导致产商繁多，不同的设备不仅硬件配置有差异，系统有差异，就连屏幕比例也有差异。想要开发出一款真正全Android平台都完美运行的app简直是不可能的..
 iOS好很多，因为iPhone和iTouch的分辨率完全一致(就算retina也有Apple帮你打理好了)，因此需要关注的往往只有系统版本的差别。<strong>在使用到某些新系统才有的特性，或者被废弃的方法时，都需要对运行环境做出判定。</strong>

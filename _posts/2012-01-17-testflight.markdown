@@ -4,8 +4,8 @@ title: TestFlight——完美的iOS app测试方案
 date: 2012-01-17 22:17:25.000000000 +09:00
 tags: 南箕北斗集
 ---
-转载本文请保留以下原作者信息:  
-原作：onevcat [http://www.onevcat.com/2012/01/testflight/](http://www.onevcat.com/2012/01/testflight/)
+ 
+【转载】原作：onevcat [http://www.onevcat.com/2012/01/testflight/](http://www.onevcat.com/2012/01/testflight/)
 
 ##  2014.5.3补充
 

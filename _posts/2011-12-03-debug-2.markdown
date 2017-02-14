@@ -4,6 +4,9 @@ title: Objective-C中的Debug表达式
 date: 2011-12-03 00:11:55.000000000 +09:00
 tags: 能工巧匠集
 ---
+
+【转载】原作：onevcat [https://onevcat.com/2011/12/debug-2/](https://onevcat.com/2011/12/debug-2/)
+
 有程序的地方就有bug，有bug的地方就需要debug。对于程序员来说，coding的过程便是制造bug和解决bug。Objective定义了不少表达式来协助debug的流程，将这些表达式用在NSLog中，可以简化部分工作，快速定义到debug的部分。 比如以下代码：
 
 ```

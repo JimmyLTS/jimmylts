@@ -4,6 +4,9 @@ title: WWDC 2014 Session笔记 - iOS界面开发的大一统
 date: 2014-07-29 10:54:18.000000000 +09:00
 tags: 能工巧匠集
 ---
+
+【转载】原作：onevcat []()
+
 ![size-classes](/assets/images/2014/size-classes-header.png)
 
 本文是我的 [WWDC 2014 笔记](http://onevcat.com/2014/07/developer-should-know-about-ios8/) 中的一篇，涉及的 Session 有
