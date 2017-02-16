@@ -5,7 +5,7 @@ date: 2016-02-25 11:32:24.000000000 +09:00
 tags: 能工巧匠集
 ---
 
-【转载】原作：onevcat []()
+【转载】原作：onevcat [http://jimmylts.com/2016/02/swift-performance/](http://jimmylts.com/2016/02/swift-performance/)
 
 ![](https://onevcat.com/assets/images/2016/taylor-swift.jpg)
 

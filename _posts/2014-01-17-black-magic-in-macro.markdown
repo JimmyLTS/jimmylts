@@ -5,7 +5,7 @@ date: 2014-01-17 01:03:36.000000000 +09:00
 tags: 能工巧匠集
 ---
 
-【转载】原作：onevcat []()
+【转载】原作：onevcat [http://jimmylts.com/2014/01/black-magic-in-macro/](http://jimmylts.com/2014/01/black-magic-in-macro/)
 
 ![Happy define :)](/assets/images/2014/define-title.png)
 

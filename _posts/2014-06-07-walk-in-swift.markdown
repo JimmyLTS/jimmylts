@@ -5,7 +5,7 @@ date: 2014-06-07 18:23:44.000000000 +09:00
 tags: 能工巧匠集
 ---
 
-【转载】原作：onevcat []()
+【转载】原作：onevcat [http://jimmylts.com/2014/06/walk-in-swift/](http://jimmylts.com/2014/06/walk-in-swift/)
 
 ![](/assets/images/2014/swift.png)
 

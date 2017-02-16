@@ -5,7 +5,7 @@ date: 2015-09-27 20:58:47.000000000 +09:00
 tags: 能工巧匠集
 ---
 
-【转载】原作：onevcat []()
+【转载】原作：onevcat [http://jimmylts.com/2015/09/ui-testing/](http://jimmylts.com/2015/09/ui-testing/)
 
 ![](/assets/images/2015/ui-testing-title.png)
 

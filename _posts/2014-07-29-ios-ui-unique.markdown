@@ -5,7 +5,7 @@ date: 2014-07-29 10:54:18.000000000 +09:00
 tags: 能工巧匠集
 ---
 
-【转载】原作：onevcat []()
+【转载】原作：onevcat [http://jimmylts.com/2014/07/ios-ui-unique/](http://jimmylts.com/2014/07/ios-ui-unique/)
 
 ![size-classes](/assets/images/2014/size-classes-header.png)
 

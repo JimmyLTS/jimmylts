@@ -5,7 +5,7 @@ date: 2014-05-09 11:48:33.000000000 +09:00
 tags: 能工巧匠集
 ---
 
-【转载】原作：onevcat []()
+【转载】原作：onevcat [http://jimmylts.com/2014/05/kiwi-mock-stub-test/](http://jimmylts.com/2014/05/kiwi-mock-stub-test/)
 
 ![test](/assets/images/2014/img001-mock-test.jpg)
 

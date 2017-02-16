@@ -5,7 +5,7 @@ date: 2014-10-25 00:02:07.000000000 +09:00
 tags: 能工巧匠集
 ---
 
-【转载】原作：onevcat []()
+【转载】原作：onevcat [http://jimmylts.com/2014/10/ib-customize-view/](http://jimmylts.com/2014/10/ib-customize-view/)
 
 本文是我的 [WWDC 2014 笔记](http://onevcat.com/2014/07/developer-should-know-about-ios8/) 中的一篇，涉及的 Session 有
 

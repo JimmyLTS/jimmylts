@@ -5,7 +5,7 @@ date: 2015-06-11 10:24:16.000000000 +09:00
 tags: 能工巧匠集
 ---
 
-【转载】原作：onevcat []()
+【转载】原作：onevcat [http://jimmylts.com/2015/06/ios9-sdk/](http://jimmylts.com/2015/06/ios9-sdk/)
 
 ![](/assets/images/2015/wwdc15.jpg)
 
