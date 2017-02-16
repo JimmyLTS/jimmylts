@@ -5,7 +5,7 @@ date: 2014-02-14 01:06:19.000000000 +09:00
 tags: 能工巧匠集
 ---
 
-【转载】原作：onevcat []()
+【转载】原作：onevcat [http://jimmylts.com/2014/02/ios-test-with-kiwi/](http://jimmylts.com/2014/02/ios-test-with-kiwi/)
 
 ![Kiwi](/assets/images/2014/kiwi-title.jpg)
 

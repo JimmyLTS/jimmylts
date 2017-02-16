@@ -5,7 +5,7 @@ date: 2016-01-19 15:32:24.000000000 +09:00
 tags: 能工巧匠集
 ---
 
-【转载】原作：onevcat []()
+【转载】原作：onevcat [http://jimmylts.com/2016/01/create-framework/](http://jimmylts.com/2016/01/create-framework/)
 
 > 这是我在今年 1 月 10 日 [@Swift 开发者大会](http://atswift.io) 上演讲的文字稿。相关的视频还在制作中，没有到现场的朋友可以通过这个文字稿了解到这个 session 的内容。
 

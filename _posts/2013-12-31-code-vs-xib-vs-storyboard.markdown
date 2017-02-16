@@ -5,7 +5,7 @@ date: 2013-12-31 01:02:21.000000000 +09:00
 tags: 能工巧匠集
 ---
 
-【转载】原作：onevcat []()
+【转载】原作：onevcat [http://jimmylts.com/2013/12/code-vs-xib-vs-storyboard/](http://jimmylts.com/2013/12/code-vs-xib-vs-storyboard/)
 
 ![Code-vs-Xibs-vs-StroyBoard](/assets/images/2013/code-xib-sb.png)
 

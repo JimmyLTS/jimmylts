@@ -5,7 +5,7 @@ date: 2015-06-15 16:25:07.000000000 +09:00
 tags: 能工巧匠集
 ---
 
-【转载】原作：onevcat []()
+【转载】原作：onevcat [http://jimmylts.com/2015/06/multitasking/](http://jimmylts.com/2015/06/multitasking/)
 
 本文是我的 [WWDC15 笔记](http://onevcat.com/2015/06/ios9-sdk/)中的一篇，涉及的 Session 有
 
