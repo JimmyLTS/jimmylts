@@ -1,8 +1,8 @@
 ---
 layout: post
-title: Java学习(一) --- Mac OS X 搭建Java环境
+title: Java学习(一)--Mac搭建Java环境
 date: 2017-03-27 20:50:24.000000000 +08:00
-tags: 学习之路
+tags: Java学习
 ---
 
 ![](/assets/images/2017/torrow_better.jpg)
