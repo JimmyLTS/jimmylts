@@ -2,7 +2,7 @@
 layout: post
 title: iOS 转场动画详解
 date: 2017-05-03 15:40:00
-tags: 能工巧匠集
+tags: iOS
 ---
 
 # 第一部分：Transition 解释
