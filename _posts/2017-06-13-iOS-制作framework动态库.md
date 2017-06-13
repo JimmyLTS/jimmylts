@@ -64,7 +64,7 @@ xcode版本: 8.3.2，Mac OS版本:10.12
 
 合并命令只是合并 framework 下的可执行文件，因此需要用合并后的 exec 文件替换真机或模拟器 framework 中的 exec 文件。
 
-####framework合并脚本：
+#### framework合并脚本：
 在xcode中添加脚本后会自动将生成的模拟器与设备的framework合并，比使用合并命令手动合并更简单，添加步骤如下：
 
 在 Build Phases 中点击左上角 + ，选择 New Run Script Phase 添加一项
